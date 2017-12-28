@@ -180,6 +180,8 @@ decode_version() {
 
 # report: print the current state of the configuration variables
 report() {
+	echo "arch                        $karch"
+	echo "cross_compile               $kcross_compile"
 	echo "kernel directory            $ksrc"
 	print_realpath $ksrc
 	echo "kernel sources              $src"
@@ -506,6 +508,14 @@ for opt do
 	optarg=${opt#*=}
 	case "$opt" in
 	--kernel-dir=*) ksrc="$optarg"
+	;;
+	--arch=*) 
+	karch="$optarg" 
+	kopts="$kopts ARCH=$optarg"
+	;;
+	--cross_compile=*) 
+	kcross_compile="$optarg"
+	kopts="$kopts CROSS_COMPILE=$optarg"
 	;;
 	--kernel-sources=*) src="$optarg"
 	;;
