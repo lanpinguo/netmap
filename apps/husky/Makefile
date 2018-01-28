@@ -1,18 +1,18 @@
 # For multiple programs using a single source file each,
 # we can just define 'progs' and create custom targets.
-PROGS	=	pkt-gen pkt-gen-b
+PROGS	=	pkt-husky
 LIBNETMAP =
 
 CLEANFILES = $(PROGS) *.o
 
 CC = /work/orangePi/OrangePi_H5SDK/toolchain/gcc-linaro-aarch/bin/aarch64-linux-gnu-gcc
 SRCDIR ?= ../..
-VPATH = $(SRCDIR)/apps/pkt-gen-arm64
+#VPATH = $(SRCDIR)/apps/pkt-gen
 
 NO_MAN=
 CFLAGS = -O2 -pipe
 #CFLAGS += -Werror -Wall -Wunused-function
-CFLAGS += -Werror  
+CFLAGS += -Werror 
 CFLAGS += -I $(SRCDIR)/sys -I $(SRCDIR)/apps/include
 CFLAGS += -Wextra
 
@@ -40,7 +40,5 @@ install: $(PROGS:%=install-%)
 install-%:
 	install -D $* $(DESTDIR)/$(PREFIX)/bin/$*
 
-pkt-gen-b: pkt-gen-b.o
-
-pkt-gen-b.o: pkt-gen.c
-	$(CC) $(CFLAGS) -DBUSYWAIT -c $^ -o $@
+pkt-husky: husky_demo.c
+	$(CC) $(CFLAGS) -DBUSYWAIT $^ -o $@ $(LDLIBS)

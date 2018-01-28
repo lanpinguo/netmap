@@ -325,11 +325,26 @@ static void __usbnet_status_stop_force(struct usbnet *dev)
 void usbnet_skb_return (struct usbnet *dev, struct sk_buff *skb)
 {
 	int	status;
+#ifdef DEV_NETMAP
+	u_int dummy;
+#endif
 
 	if (test_bit(EVENT_RX_PAUSED, &dev->flags)) {
 		skb_queue_tail(&dev->rxq_pause, skb);
 		return;
 	}
+
+	
+#ifdef DEV_NETMAP
+		if (netmap_rx_irq(dev->net, 0, &dummy))
+		{
+			(void)usbnet_netmap_rx_fixup(dev->net, skb);
+			dev_kfree_skb_any (skb);
+			return;
+		}
+		
+#endif /* DEV_NETMAP */
+
 
 	skb->protocol = eth_type_trans (skb, dev->net);
 	dev->net->stats.rx_packets++;
@@ -440,26 +455,37 @@ static void rx_complete (struct urb *urb);
 
 static int rx_submit (struct usbnet *dev, struct urb *urb, gfp_t flags)
 {
-	struct sk_buff		*skb;
+	struct sk_buff		*skb = NULL;
 	struct skb_data		*entry;
 	int			retval = 0;
 	unsigned long		lockflags;
 	size_t			size = dev->rx_urb_size;
-
+#if 0
+	struct usbnet_adapter 	*ua;
+	struct netmap_adapter	*na ;
+	na = NA(dev->net);
+	ua = usbnet_adapter(dev->net);
+#endif
 	/* prevent rx skb allocation when error ratio is high */
 	if (test_bit(EVENT_RX_KILL, &dev->flags)) {
 		usb_free_urb(urb);
 		return -ENOLINK;
 	}
 
-	skb = __netdev_alloc_skb_ip_align(dev->net, size, flags);
+#ifdef DEV_NETMAP
+	/*if (nm_native_on(na)){
+		skb = usbnet_netmap_buffer_get(ua);
+	}*/
+#endif
+	if(skb == NULL){
+		skb = __netdev_alloc_skb_ip_align(dev->net, size, flags);
+	}
 	if (!skb) {
 		netif_dbg(dev, rx_err, dev->net, "no rx skb\n");
 		usbnet_defer_kevent (dev, EVENT_RX_MEMORY);
 		usb_free_urb (urb);
 		return -ENOMEM;
 	}
-
 	entry = (struct skb_data *) skb->cb;
 	entry->urb = urb;
 	entry->dev = dev;
@@ -476,9 +502,11 @@ static int rx_submit (struct usbnet *dev, struct urb *urb, gfp_t flags)
 	    !test_bit (EVENT_DEV_ASLEEP, &dev->flags)) {
 		switch (retval = usb_submit_urb (urb, GFP_ATOMIC)) {
 		case -EPIPE:
+			printk(KERN_WARNING "submit urb RX_HALT \n");
 			usbnet_defer_kevent (dev, EVENT_RX_HALT);
 			break;
 		case -ENOMEM:
+			printk(KERN_WARNING "submit urb RX_MEMORY\n");
 			usbnet_defer_kevent (dev, EVENT_RX_MEMORY);
 			break;
 		case -ENODEV:
@@ -1101,6 +1129,7 @@ fail_halt:
 				resched = 0;
 			usb_autopm_put_interface(dev->intf);
 fail_lowmem:
+			printk(KERN_WARNING "kevent lowmem\n");
 			if (resched)
 				tasklet_schedule (&dev->bh);
 		}
@@ -1146,7 +1175,7 @@ static void tx_complete (struct urb *urb)
 	struct usbnet		*dev = entry->dev;
 
 #ifdef DEV_NETMAP
-	netmap_tx_irq(dev->net, 0);
+	//netmap_tx_irq(dev->net, 0);
 #endif /* DEV_NETMAP */
 
 
@@ -1180,7 +1209,7 @@ static void tx_complete (struct urb *urb)
 					  "tx throttle %d\n", urb->status);
 			}
 #ifndef DEV_NETMAP			
-			netif_stop_queue (dev->net);
+			//netif_stop_queue (dev->net);
 #endif
 			break;
 		default:

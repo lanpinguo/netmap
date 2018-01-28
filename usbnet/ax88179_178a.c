@@ -1118,10 +1118,6 @@ static int ax88179_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 	u32 rx_hdr;
 	u16 hdr_off;
 	u32 *pkt_hdr;
-#ifdef DEV_NETMAP
-	u_int dummy;
-	void* rx_buff = NULL;
-#endif
 
 	/* This check is no longer done by usbnet */
 	if (skb->len < dev->net->hard_header_len)
@@ -1166,19 +1162,6 @@ static int ax88179_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 			skb_set_tail_pointer(ax_skb, pkt_len);
 			ax_skb->truesize = pkt_len + sizeof(struct sk_buff);
 			ax88179_rx_checksum(ax_skb, pkt_hdr);
-#ifdef DEV_NETMAP
-			rx_buff = usbnet_netmap_buffer_get(dev->net);
-			if(rx_buff)
-			{
-				memcpy(rx_buff,ax_skb->data,pkt_len);
-			}
-			if (netmap_rx_irq(dev->net, 0, &dummy))
-			{
-				dev_kfree_skb_any (ax_skb);
-				continue;
-			}
-
-#endif /* DEV_NETMAP */
 			usbnet_skb_return(dev, ax_skb);
 		} else {
 			return 0;

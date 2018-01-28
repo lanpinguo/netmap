@@ -14,7 +14,7 @@ ROOTDIR := /work/sdn/netmap
 # in fact the kernel sources path must be specified.
 
 # Additional compile flags (e.g. header location)
-EXTRA_CFLAGS := -I$(ROOTDIR) -I$(BUILDDIR) -I$(SRCDIR) -I$(SRCDIR)/../sys -I$(SRCDIR)/../sys/dev -DCONFIG_NETMAP -DDEV_NETMAP
+EXTRA_CFLAGS := -I$(ROOTDIR) -I$(BUILDDIR) -I$(SRCDIR) -I$(SRCDIR)/../sys -I$(SRCDIR)/../sys/dev -DCONFIG_NETMAP -DDEV_NETMAP -DCONFIG_NETMAP_VALE
 EXTRA_CFLAGS += -Wno-unused-but-set-variable
 
 
@@ -28,9 +28,9 @@ LIN_VER = 30a41
 
 
 ifneq ($(KERNELRELEASE),)
-    obj-m := ax88179_178a.o
-    obj-m += usbnet.o
-#module-objs := probe.o
+	obj-m := ax88179_178a.o
+	obj-m += usbnet.o
+	usbnet-objs := usbnet_core.o if_usbnet_netmap.o
 else
 	PWD := $(shell pwd)
     
@@ -43,6 +43,7 @@ endif
 .PHONY : clean
 
 clean:
+	rm -rf *.o
 	make -C $(KSRC) M=$(PWD) EXTRA_CFLAGS='$(EXTRA_CFLAGS)' $(KOPTS) modules clean
      
      

@@ -73,3 +73,8 @@ read-vars.mak
 LINUX/scripts/conf
 config.mak
 *.rej
+e1000e
+i40e
+igb
+ixgbe
+ixgbevf

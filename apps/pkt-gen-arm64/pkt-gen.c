@@ -185,7 +185,7 @@ const char *default_payload="netmap pkt-gen DIRECT payload\n"
 const char *indirect_payload="netmap pkt-gen indirect payload\n"
 	"http://info.iet.unipi.it/~luigi/netmap/ ";
 
-int verbose = 0;
+int verbose = 1;
 int normalize = 1;
 
 #define VIRT_HDR_1	10	/* length of a base vnet-hdr */
@@ -1720,11 +1720,25 @@ receiver_body(void *data)
 
 	memset(&cur, 0, sizeof(cur));
 
+
+	for (;!targ->cancel;) {
+		sleep(4);
+	}
+	
+#if 1
+#ifdef BUSYWAIT
+	D("Current rev mode is BUSYWAIT");
+#else
+	D("Current rev mode is !BUSYWAIT");
+#endif /* BUSYWAIT */
+
+
 	if (setaffinity(targ->thread, targ->affinity))
 		goto quit;
 
 	D("reading from %s fd %d main_fd %d",
 		targ->g->ifname, targ->fd, targ->g->main_fd);
+#if 1
 	/* unbounded wait for the first packet. */
 	for (;!targ->cancel;) {
 		i = poll(&pfd, 1, 1000);
@@ -1740,7 +1754,9 @@ receiver_body(void *data)
 		}
 		RD(1, "waiting for initial packets, poll returns %d %d",
 			i, pfd.revents);
+		sleep(4);
 	}
+#endif	
 	/* main loop, exit after 1s silence */
 	clock_gettime(CLOCK_REALTIME_PRECISE, &targ->tic);
     if (targ->g->dev_type == DEV_TAP) {
@@ -1771,13 +1787,14 @@ receiver_body(void *data)
 		/* Once we started to receive packets, wait at most 1 seconds
 		   before quitting. */
 #ifdef BUSYWAIT
+		D("ioctl RXSYNC");
 		if (ioctl(pfd.fd, NIOCRXSYNC, NULL) < 0) {
 			D("ioctl error on queue %d: %s", targ->me,
 					strerror(errno));
 			goto quit;
 		}
 #else /* !BUSYWAIT */
-		if (poll(&pfd, 1, 1 * 1000) <= 0 && !targ->g->forever) {
+		if (poll(&pfd, 1, 2 * 1000) <= 0 && !targ->g->forever) {
 			clock_gettime(CLOCK_REALTIME_PRECISE, &targ->toc);
 			targ->toc.tv_sec -= 1; /* Subtract timeout time. */
 			goto out;
@@ -1824,7 +1841,7 @@ out:
 quit:
 	/* reset the ``used`` flag. */
 	targ->used = 0;
-
+#endif
 	return (NULL);
 }
 
@@ -2437,8 +2454,11 @@ main_thread(struct glob_arg *g)
 
 		cur.pkts = cur.bytes = cur.events = 0;
 		cur.min_space = 0;
-		if (usec < 10000) /* too short to be meaningful */
+#if 0		
+		if (usec < 20000) /* too short to be meaningful */
 			continue;
+#endif		
+		sleep(2);
 		/* accumulate counts for all threads */
 		for (i = 0; i < g->nthreads; i++) {
 			cur.pkts += targs[i].ctr.pkts;

@@ -397,6 +397,7 @@ netmap_mem2_get_lut(struct netmap_mem_d *nmd, struct netmap_lut *lut)
 	return 0;
 }
 
+
 static struct netmap_obj_params netmap_min_priv_params[NETMAP_POOLS_NR] = {
 	[NETMAP_IF_POOL] = {
 		.size = 1024,
@@ -996,7 +997,7 @@ netmap_extra_alloc(struct netmap_adapter *na, uint32_t *head, uint32_t n)
 			*head = cur; /* restore */
 			break;
 		}
-		ND(5, "allocate buffer %d -> %d", *head, cur);
+		ND( "allocate buffer %d -> %d", *head, cur);
 		*p = cur; /* link to previous head */
 	}
 
@@ -1799,7 +1800,7 @@ netmap_mem2_rings_create(struct netmap_adapter *na)
 				netmap_mem_bufsize(na->nm_mem);
 			ND("%s h %d c %d t %d", kring->name,
 				ring->head, ring->cur, ring->tail);
-			ND("initializing slots for %s_ring", nm_txrx2str(txrx));
+			ND("initializing slots for %s_ring", nm_txrx2str(t));
 			if (i != nma_get_nrings(na, t) || (na->na_flags & NAF_HOST_RINGS)) {
 				/* this is a real ring */
 				if (netmap_new_bufs(na->nm_mem, ring->slot, ndesc)) {

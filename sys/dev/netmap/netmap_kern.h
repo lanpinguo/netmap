@@ -255,7 +255,21 @@ typedef struct hrtimer{
 #define nm_prinf(fmt, arg...)    printk(KERN_INFO fmt, ##arg)
 #endif
 
-#define ND(format, ...)
+#if 0
+#define ND(format, ...) \
+	do {							\
+		struct timeval __xxts;				\
+		microtime(&__xxts); 			\
+		nm_prinf("%03d.%06d [%4d] %-25s " format "\n",	\
+		(int)__xxts.tv_sec % 1000, (int)__xxts.tv_usec, \
+		__LINE__, __FUNCTION__, ##__VA_ARGS__); 	\
+	} while (0)
+#else
+#define ND(format, ...) \
+	do {							\
+	} while (0)
+#endif
+
 #define D(format, ...)						\
 	do {							\
 		struct timeval __xxts;				\
@@ -1794,6 +1808,12 @@ NMB(struct netmap_adapter *na, struct netmap_slot *slot)
 {
 	struct lut_entry *lut = na->na_lut.lut;
 	uint32_t i = slot->buf_idx;
+
+	if(lut == NULL)
+	{
+		D("Get lut error");
+		return NULL;
+	}
 	return (unlikely(i >= na->na_lut.objtotal)) ?
 		lut[0].vaddr : lut[i].vaddr;
 }
@@ -1804,7 +1824,15 @@ PNMB(struct netmap_adapter *na, struct netmap_slot *slot, uint64_t *pp)
 	uint32_t i = slot->buf_idx;
 	struct lut_entry *lut = na->na_lut.lut;
 	struct plut_entry *plut = na->na_lut.plut;
-	void *ret = (i >= na->na_lut.objtotal) ? lut[0].vaddr : lut[i].vaddr;
+	void *ret ;
+
+	if((lut == NULL) || (plut == NULL))
+	{
+		D("Get error, lut = %p, plut= %p",lut,plut);
+		return NULL;
+	}
+	
+	ret = (i >= na->na_lut.objtotal) ? lut[0].vaddr : lut[i].vaddr;
 
 #ifndef _WIN32
 	*pp = (i >= na->na_lut.objtotal) ? plut[0].paddr : plut[i].paddr;
