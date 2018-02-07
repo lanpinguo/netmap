@@ -100,6 +100,9 @@ struct usbnet_slot{
 	u64		data_len;
 	u32		in_use;
 
+#define SLOT_STATE_IDLE 0	
+#define SLOT_STATE_USED	1	
+
 };
 
 
@@ -120,6 +123,40 @@ struct usbnet_adapter {
 	u64					tx_drop_pkts_cnt;
 
 };
+
+#define RESERVED_BLOCK_SIZE		128
+
+struct KOFDPA_PKT_FEILD {
+	u16									offset; /* the feild location offset from the base address */
+	u16									len; 		/* the feild length */
+};
+
+
+struct KOFDPA_PKT_CB{
+	u64											port; 	/* every bit indicate a port, physical port number range is 0~63 */
+	void 										*this;	/* pointer to self*/
+	uint64_t								len;		/* total len */
+	struct KOFDPA_PKT_FEILD dmac;		/* destination mac address*/
+	struct KOFDPA_PKT_FEILD	smac;		/* source mac address */
+	struct KOFDPA_PKT_FEILD	vlan_0;
+	struct KOFDPA_PKT_FEILD	vlan_1;
+	struct KOFDPA_PKT_FEILD	l3_type;/* layer 3 protocol type */
+	struct KOFDPA_PKT_FEILD	mpls_0;	/* mpls0 header */
+	struct KOFDPA_PKT_FEILD	mpls_1; /* mpls1 header */
+	struct KOFDPA_PKT_FEILD	mpls_2; /* mpls2 header */
+	struct KOFDPA_PKT_FEILD	cw; 		/* mpls control word */
+	struct KOFDPA_PKT_FEILD	dip; 		/* destination IP address */
+	struct KOFDPA_PKT_FEILD	sip; 		/* source IP address */
+	struct KOFDPA_PKT_FEILD	l4_type;/* layer 4 protocol type */
+	struct KOFDPA_PKT_FEILD	l4_dp;  /* layer 4 destination port */
+	struct KOFDPA_PKT_FEILD	l4_sp;  /* layer 4 source port */
+
+	struct KOFDPA_PKT_FEILD	data; 	/* payload */
+
+
+};
+
+
 
 
 
@@ -155,13 +192,7 @@ static inline void *usbnet_adapter(const struct net_device *dev)
 
 
 
-static void dummy(void){}
 
-#ifdef NETMAP_LINUX_HAVE_USBNET_DOWN2
-#define nm_usbnet_down(_a)	dummy()
-#else
-#define nm_usbnet_down(_a)	dummy()
-#endif
 
 
 int usbnet_netmap_txsync(struct netmap_kring *kring, int flags);

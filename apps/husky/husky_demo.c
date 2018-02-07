@@ -75,6 +75,20 @@
 uint8_t ifname[64] = "netmap:enx000ec6ddbab6";
 
 
+int test1(int lim,int *cur)
+{
+	*cur = (*cur + 1) % lim;
+	return *cur;
+}
+
+int test2(int lim,int *cur)
+{
+	*cur = ((*cur + 1) == lim) ? 0 : (*cur + 1);
+	return *cur;
+}
+
+
+
 /* Check the payload of the packet for errors (use it for debug).
  * Look for consecutive ascii representations of the size of the packet.
  */

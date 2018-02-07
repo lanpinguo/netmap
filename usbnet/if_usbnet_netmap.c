@@ -67,17 +67,19 @@ usbnet_netmap_txsync(struct netmap_kring *kring, int flags)
 	struct netmap_adapter *na = kring->na;
 	struct ifnet *ifp = na->ifp;
 	struct netmap_ring *ring = kring->ring;
-	u_int ring_nr = kring->ring_id;
+	//u_int ring_nr = kring->ring_id;
 	u_int nm_i; /* index into the netmap ring */
 	u_int nic_i;	/* index into the NIC ring */
 	u_int n;
 	u_int const lim = kring->nkr_num_slots - 1;
 	u_int const head = kring->rhead;
 	/* generate an interrupt approximately every half ring */
-	u_int report_frequency = kring->nkr_num_slots >> 1;
+	//u_int report_frequency = kring->nkr_num_slots >> 1;
 
 	/* device-specific */
 	struct usbnet_adapter 	*ua;
+	netdev_tx_t				rv;
+	struct sk_buff			*skb = NULL;
 
 
 	ua = usbnet_adapter(ifp);
@@ -103,8 +105,11 @@ usbnet_netmap_txsync(struct netmap_kring *kring, int flags)
 
 			/* device-specific */
 			/*Todo*/
+			skb = netdev_alloc_skb_ip_align(ifp, len);
 
-			
+			if(skb == NULL){
+				break;
+			}
 			NM_CHECK_ADDR_LEN(na, addr, len);
 
 			if (slot->flags & NS_BUF_CHANGED) {
@@ -115,8 +120,12 @@ usbnet_netmap_txsync(struct netmap_kring *kring, int flags)
 			slot->flags &= ~(NS_REPORT | NS_BUF_CHANGED);
 
 			/* Fill the slot in the NIC ring. */
-			/*Todo*/	
-		
+			/*Todo*/
+			memcpy(skb->data,addr,len);
+			rv = usbnet_start_xmit (skb,ifp);
+			if(rv != NETDEV_TX_OK){
+
+			}
 			nm_i = nm_next(nm_i, lim);
 			nic_i = nm_next(nic_i, lim);
 		}
@@ -153,7 +162,7 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 	struct netmap_adapter *na = kring->na;
 	struct ifnet *ifp = na->ifp;
 	struct netmap_ring *ring = kring->ring;
-	u_int ring_nr = kring->ring_id;
+	//u_int ring_nr = kring->ring_id;
 	u_int nm_i;		/* index into the netmap ring */
 	u_int nic_i ;	/* index into the NIC ring */
 	u_int n;
@@ -186,7 +195,7 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 		for (n = 0; ; n++) {
 			struct usbnet_slot *curr = &ua->rx_ring[nic_i];
 	
-			if (curr->in_use == 0)
+			if (curr->in_use == SLOT_STATE_IDLE)
 				break;
 			ring->slot[nm_i].len = curr->data_len;
 			ring->slot[nm_i].flags = slot_flags;
@@ -200,7 +209,7 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 		kring->nr_kflags &= ~NKR_PENDINTR;
 	}
 
-	D("rx_pkts =  %lld , drop_pkts = %lld ,cur_i = %lld",ua->rx_pkts_cnt,ua->rx_drop_pkts_cnt,ua->cur);
+	D("rx_pkts =  %lld , drop_pkts = %lld ,cur_i = %d",ua->rx_pkts_cnt,ua->rx_drop_pkts_cnt,ua->cur);
 	/*
 	 * Second part: skip past packets that userspace has released.
 	 */
@@ -216,7 +225,7 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 				// netmap_reload_map(pdev, DMA_TO_DEVICE, old_paddr, addr)
 				slot->flags &= ~NS_BUF_CHANGED;
 			}
-			curr->in_use = 0;
+			curr->in_use = SLOT_STATE_IDLE;
 			nm_i = nm_next(nm_i, lim);
 			nic_i = nm_next(nic_i, lim);
 		}
@@ -228,8 +237,8 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 
 	return 0;
 
-ring_reset:
-	return netmap_ring_reinit(kring);
+/*ring_reset:
+	return netmap_ring_reinit(kring);*/
 }
 
 
@@ -271,13 +280,13 @@ void* usbnet_netmap_buffer_get(struct usbnet_adapter 	*ua)
 int usbnet_nic_ring_head_forward(struct usbnet_adapter 	*ua)
 {
 
-	ua->rdh = (++ua->rdh) % ua->num_rx_buff;
+	ua->rdh = (ua->rdh + 1) % ua->num_rx_buff;
 	return ua->rdh;
 }
 
 int usbnet_nic_ring_tail_forward(struct usbnet_adapter 	*ua)
 {
-	ua->rdt = (++ua->rdt) % ua->num_rx_buff;
+	ua->rdt = (ua->rdt + 1) % ua->num_rx_buff;
 	return ua->rdt;
 }
 
@@ -287,7 +296,6 @@ int usbnet_nic_ring_tail_forward(struct usbnet_adapter 	*ua)
  */
 int usbnet_netmap_rx_fixup(struct net_device *dev, struct sk_buff * skb)
 {
-	u32 i;
 	struct usbnet_adapter 	*ua;
 	struct netmap_adapter	*na ;
 	struct usbnet_slot		*pRxBuff = NULL;
@@ -297,7 +305,7 @@ int usbnet_netmap_rx_fixup(struct net_device *dev, struct sk_buff * skb)
 	na = NA(dev);
 
 
-	/*for(i = 0 ; i < 32 ; i++){
+	/*for(u32 i = 0 ; i < 32 ; i++){
 		printk(KERN_WARNING "%02x ",skb->data[i]);
 	}*/
 
@@ -306,15 +314,15 @@ int usbnet_netmap_rx_fixup(struct net_device *dev, struct sk_buff * skb)
 	
 	if (pRxBuff){
 		
-		if(pRxBuff->in_use != 0){
+		if(pRxBuff->in_use != SLOT_STATE_IDLE){
 			D("no rx buffers");
 			ua->rx_drop_pkts_cnt++;
 			return -1;
 		}
 		
-		memcpy(pRxBuff->data_ptr,skb->data,skb->len);
-		pRxBuff->data_len = skb->len;
-		pRxBuff->in_use = 1;
+		memcpy(pRxBuff->data_ptr + RESERVED_BLOCK_SIZE,skb->data,skb->len);
+		pRxBuff->data_len = skb->len + RESERVED_BLOCK_SIZE;
+		pRxBuff->in_use = SLOT_STATE_USED;
 		ua->rx_pkts_cnt++;
 	}
 
@@ -340,6 +348,24 @@ int usbnet_netmap_init_buffers(struct net_device *dev)
 	struct netmap_slot		*slot;
 	int i, si;
 	void* vaddr;
+	struct KOFDPA_PKT_CB pcb = {
+		.port 		= 0,
+		.dmac 		= {.offset = RESERVED_BLOCK_SIZE + 0,	.len = 6},
+		.smac 		= {.offset = RESERVED_BLOCK_SIZE + 6,	.len = 6},
+		.vlan_0 	= {.offset = 0,.len = 4},
+		.vlan_1 	= {.offset = 0,.len = 4},
+		.l3_type	= {.offset = 0,.len = 2},
+		.mpls_0		= {.offset = 0,.len = 4},
+		.mpls_1		= {.offset = 0,.len = 4},
+		.mpls_2		= {.offset = 0,.len = 4},
+		.cw 			= {.offset = 0,.len = 4},
+		.dip 			= {.offset = 0,.len = 4},
+		.sip 			= {.offset = 0,.len = 4},
+		.l4_type 	= {.offset = 0,.len = 2},
+		.l4_dp		= {.offset = 0,.len = 2},
+		.l4_sp		= {.offset = 0,.len = 2},
+		.data			= {.offset = RESERVED_BLOCK_SIZE,.len = 0},
+	};
 
 
 	D("usbnet_netmap_init_buffers enter");
@@ -366,12 +392,13 @@ int usbnet_netmap_init_buffers(struct net_device *dev)
 	slot = netmap_reset(na, NR_RX, 0, 0);
 	if (slot) {
 		/* initialize the RX ring for netmap mode */
-		D("rx slot %llx was set", slot);
+		D("rx slot %llx was set", (u64)slot);
 		for (i = 0; i < ua->num_rx_buff; i++) {
 			si = netmap_idx_n2k(&na->rx_rings[0], i);
 			vaddr = NMB(na, slot + si);
 			ua->rx_ring[i].data_ptr = vaddr;
-			ua->rx_ring[i].in_use = 0;
+			memcpy(vaddr,&pcb,sizeof(pcb));
+			ua->rx_ring[i].in_use = SLOT_STATE_IDLE;
 			//*((u32*)vaddr + 8) = 0x11111111 * (i + 1);
 			//ua->rx_ring_skb[i] = build_skb(vaddr, 1500);
 
@@ -385,7 +412,7 @@ int usbnet_netmap_init_buffers(struct net_device *dev)
 	slot = netmap_reset(na, NR_TX, 0, 0);
 	if (slot) {
 		/* initialize the tx ring for netmap mode */
-		D("tx slot %d was set", slot);
+		D("tx slot %llx was set", (u64)slot);
 	}
 	return 1;
 
@@ -413,8 +440,9 @@ usbnet_netmap_reg(struct netmap_adapter *na, int onoff)
 		usleep_range(1000, 2000);
 #endif
 
-	if (netif_running(adapter->net))
-		nm_usbnet_down(adapter);
+	if (netif_running(adapter->net)){
+		//nm_usbnet_down(adapter);
+	}
 
 	/* enable or disable flags and callbacks in na and ifp */
 	if (onoff) {
