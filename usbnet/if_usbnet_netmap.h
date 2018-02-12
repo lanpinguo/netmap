@@ -124,7 +124,7 @@ struct usbnet_adapter {
 
 };
 
-#define RESERVED_BLOCK_SIZE		128
+#define RESERVED_BLOCK_SIZE		256
 
 struct KOFDPA_PKT_FEILD {
 	u16									offset; /* the feild location offset from the base address */
@@ -135,7 +135,8 @@ struct KOFDPA_PKT_FEILD {
 struct KOFDPA_PKT_CB{
 	u64											port; 	/* every bit indicate a port, physical port number range is 0~63 */
 	void 										*this;	/* pointer to self*/
-	uint64_t								len;		/* total len */
+	uint32_t								len;		/* total len */
+	uint32_t								pkt_len;/* pkt len */
 	struct KOFDPA_PKT_FEILD dmac;		/* destination mac address*/
 	struct KOFDPA_PKT_FEILD	smac;		/* source mac address */
 	struct KOFDPA_PKT_FEILD	vlan_0;
