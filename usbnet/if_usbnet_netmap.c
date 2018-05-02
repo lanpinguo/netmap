@@ -58,6 +58,38 @@ char netmap_usbnet_driver_name[] = "usbnet" NETMAP_LINUX_DRIVER_SUFFIX;
 
 
 
+
+
+
+
+/*
+ * Make the tx and rx rings point to the netmap buffers.
+ */
+int usbnet_reload_map(	struct netmap_adapter *na, 
+																struct netmap_slot *n_slot,
+																struct usbnet_slot *u_slot)
+{
+	void* vaddr;
+
+
+	D("usbnet_reload_map enter");
+
+	if(n_slot == NULL || u_slot == NULL)
+	{
+		D("param is null");
+		return -1;
+	}
+
+	vaddr = NMB(na, n_slot);
+	u_slot->data_ptr = vaddr;
+
+	return 0;
+}
+
+
+
+
+
 /*
  * Reconcile kernel and user view of the transmit ring.
  */
@@ -153,6 +185,10 @@ out:
 }
 
 
+
+
+
+
 /*
  * Reconcile kernel and user view of the receive ring.
  */
@@ -177,8 +213,10 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 	if (!netif_carrier_ok(ifp))
 		return 0;
 
-	if (head > lim)
+	if (head > lim){
+		D("detected error on rxsync");
 		return netmap_ring_reinit(kring);
+	}
 
 	rmb();
 
@@ -222,7 +260,7 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 
 			if (slot->flags & NS_BUF_CHANGED) {
 				/* buffer has changed, reload map */
-				// netmap_reload_map(pdev, DMA_TO_DEVICE, old_paddr, addr)
+				usbnet_reload_map(na,slot, curr);
 				slot->flags &= ~NS_BUF_CHANGED;
 			}
 			curr->in_use = SLOT_STATE_IDLE;
@@ -324,10 +362,10 @@ int usbnet_netmap_rx_fixup(struct net_device *dev, struct sk_buff * skb)
 		pRxBuff->data_len = skb->len + RESERVED_BLOCK_SIZE;
 		pRxBuff->in_use = SLOT_STATE_USED;
 		ua->rx_pkts_cnt++;
+		/*Update rdh pointer*/
+		usbnet_nic_ring_head_forward(ua);
 	}
 
-	/*Update rdh pointer*/
-	usbnet_nic_ring_head_forward(ua);
 	
 	return 0;
 	

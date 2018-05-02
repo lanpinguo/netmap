@@ -255,7 +255,7 @@ typedef struct hrtimer{
 #define nm_prinf(fmt, arg...)    printk(KERN_INFO fmt, ##arg)
 #endif
 
-#if 0
+#if 1
 #define ND(format, ...) \
 	do {							\
 		struct timeval __xxts;				\
