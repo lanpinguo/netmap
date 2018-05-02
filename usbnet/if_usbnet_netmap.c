@@ -132,8 +132,8 @@ usbnet_netmap_txsync(struct netmap_kring *kring, int flags)
 		for (n = 0; nm_i != head; n++) {
 			struct netmap_slot *slot = &ring->slot[nm_i];
 			u_int len = slot->len;
-			uint64_t paddr;
-			void *addr = PNMB(na, slot, &paddr);
+			//uint64_t paddr;
+			void *addr = NMB(na, slot);
 
 			/* device-specific */
 			/*Todo*/
@@ -158,10 +158,12 @@ usbnet_netmap_txsync(struct netmap_kring *kring, int flags)
 			if(rv != NETDEV_TX_OK){
 
 			}
+			
 			nm_i = nm_next(nm_i, lim);
 			nic_i = nm_next(nic_i, lim);
 		}
 		kring->nr_hwcur = head;
+		kring->nr_hwtail = nm_prev(nm_i, lim);
 
 		wmb();	/* synchronize writes to the NIC ring */
 
@@ -170,6 +172,7 @@ usbnet_netmap_txsync(struct netmap_kring *kring, int flags)
 	/*
 	 * Second part: reclaim buffers for completed transmissions.
 	 */
+#if 0	 
 	if (flags & NAF_FORCE_RECLAIM || nm_kr_txempty(kring)) {
 		/* record completed transmissions using TDH */
 		nic_i = NM_RD_TX_HEAD();	// XXX could scan descriptors ?
@@ -179,6 +182,7 @@ usbnet_netmap_txsync(struct netmap_kring *kring, int flags)
 		}
 		kring->nr_hwtail = nm_prev(netmap_idx_n2k(kring, nic_i), lim);
 	}
+#endif	
 out:
 
 	return 0;
