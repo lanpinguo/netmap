@@ -337,7 +337,6 @@ void usbnet_skb_return (struct usbnet *dev, struct sk_buff *skb)
 
 	
 #ifdef DEV_NETMAP
-
 	if (nm_native_on(na)){
 		if(usbnet_netmap_rx_fixup(dev->net, skb) == 0){
 
@@ -346,7 +345,6 @@ void usbnet_skb_return (struct usbnet *dev, struct sk_buff *skb)
 		dev_kfree_skb_any (skb);
 		return;
 	}
-		
 #endif /* DEV_NETMAP */
 
 
