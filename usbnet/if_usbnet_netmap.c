@@ -72,7 +72,7 @@ int usbnet_reload_map(	struct netmap_adapter *na,
 	void* vaddr;
 
 
-	D("usbnet_reload_map enter");
+	ND("usbnet_reload_map enter");
 
 	if(n_slot == NULL || u_slot == NULL)
 	{
@@ -215,7 +215,7 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 
 	ua = usbnet_adapter(ifp);
 
-	D("rx_pkts =  %lld , drop_pkts = %lld ,cur_i = %d",ua->rx_pkts_cnt,ua->rx_drop_pkts_cnt,ua->cur);
+	ND("rx_pkts =  %lld , drop_pkts = %lld ,cur_i = %d",ua->rx_pkts_cnt,ua->rx_drop_pkts_cnt,ua->cur);
 
 	if (!netif_carrier_ok(ifp))
 		return 0;
@@ -228,7 +228,6 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 	rmb();
 
 
-#if 1
 	/*
 	 * First part: import newly received packets.
 	 */
@@ -251,7 +250,6 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 		kring->nr_hwtail = nm_i;
 		kring->nr_kflags &= ~NKR_PENDINTR;
 	}
-#endif	
 
 	/*
 	 * Second part: skip past packets that userspace has released.
@@ -273,10 +271,10 @@ usbnet_netmap_rxsync(struct netmap_kring *kring, int flags)
 			nic_i = nm_next(nic_i, lim);
 		}
 		kring->nr_hwcur = head;
-		ua->rdt = nic_i - 1;
+		ua->rdt = nm_prev(nic_i, lim);
 	}
 	wmb();
-	D("ua rx buffers, rdh = %d, rdt = %d",ua->rdh, ua->rdt);
+	ND("ua rx buffers, rdh = %d, rdt = %d",ua->rdh, ua->rdt);
 
 
 	return 0;
@@ -349,7 +347,7 @@ int usbnet_netmap_rx_fixup(struct net_device *dev, struct sk_buff * skb)
 	na = NA(dev);
 
 	if(ua->rdh == ua->rdt){
-		D("no rx buffers, rdh = %d",ua->rdh);
+		ND("no rx buffers, rdh = %d",ua->rdh);
 		ua->rx_drop_pkts_cnt++;
 		return -1;
 	}
@@ -363,7 +361,7 @@ int usbnet_netmap_rx_fixup(struct net_device *dev, struct sk_buff * skb)
 		/*Update rdh pointer*/
 		usbnet_nic_ring_head_forward(ua);
 	}
-	D("ua rx buffers, rdh = %d, rdt = %d",ua->rdh, ua->rdt);
+	ND("ua rx buffers, rdh = %d, rdt = %d",ua->rdh, ua->rdt);
 
 	
 	return 0;
@@ -405,7 +403,7 @@ int usbnet_netmap_init_buffers(struct net_device *dev)
 	};
 
 
-	D("usbnet_netmap_init_buffers enter");
+	ND("usbnet_netmap_init_buffers enter");
 
 	ud = netdev_priv(dev);
 	ua = usbnet_adapter(dev);
@@ -422,14 +420,13 @@ int usbnet_netmap_init_buffers(struct net_device *dev)
 				    na->na_lut.objsize);	
 	ua->num_rx_buff		= na->num_rx_desc;
 
-#if 1
 	if (!nm_native_on(na))
 		return 0;
-#endif
+
 	slot = netmap_reset(na, NR_RX, 0, 0);
 	if (slot) {
 		/* initialize the RX ring for netmap mode */
-		D("rx slot %llx was set", (u64)slot);
+		ND("rx slot %llx was set", (u64)slot);
 		for (i = 0; i < ua->num_rx_buff; i++) {
 			si = netmap_idx_n2k(&na->rx_rings[0], i);
 			vaddr = NMB(na, slot + si);
@@ -449,14 +446,10 @@ int usbnet_netmap_init_buffers(struct net_device *dev)
 	slot = netmap_reset(na, NR_TX, 0, 0);
 	if (slot) {
 		/* initialize the tx ring for netmap mode */
-		D("tx slot %llx was set", (u64)slot);
+		ND("tx slot %llx was set", (u64)slot);
 	}
 	return 1;
 
-
-
-	D("usbnet_netmap_init_buffers not be supported");
-	return 0;
 }
 
 
