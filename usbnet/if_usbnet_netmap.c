@@ -347,11 +347,6 @@ int usbnet_netmap_rx_fixup(struct net_device *dev, struct sk_buff * skb)
 	na = NA(dev);
 
 
-	/*for(u32 i = 0 ; i < 32 ; i++){
-		printk(KERN_WARNING "%02x ",skb->data[i]);
-	}*/
-
-
 	pRxBuff = &ua->rx_ring[ua->rdh];
 	
 	if (pRxBuff){
