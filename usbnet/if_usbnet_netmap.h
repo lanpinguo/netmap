@@ -125,37 +125,68 @@ struct usbnet_adapter {
 };
 
 #define RESERVED_BLOCK_SIZE		256
+#define KDP_GET_FEILD_ADDR(pcb,feild)	((void*)(pcb) + pcb->feilds[feild].offset)
 
-struct KOFDPA_PKT_FEILD {
-	u16									offset; /* the feild location offset from the base address */
-	u16									len; 		/* the feild length */
+enum{
+	FEILD_DMAC = 0,	/* destination mac address*/
+	FEILD_SMAC,			/* source mac address */
+	FEILD_VLAN_0,
+	FEILD_VLAN_1,
+	FEILD_L3_TYPE,	/* layer 3 protocol type */
+	FEILD_MPLS_2, 	/* mpls2 header */
+	FEILD_MPLS_1,		/* mpls1 header */
+	FEILD_MPLS_0, 	/* mpls0 header */
+	FEILD_CW, 			/* mpls control word */
+	FEILD_L3_HDR, 	/* layer 3 protocol header  */
+	FEILD_L4_HDR,		/* layer 4 protocol header */
+	FEILD_DATA, 		/* payload */
+	
+	FEILD_MAX
+
+};
+
+enum{
+	FEILD_DMAC_LEN 		= 6,	/* destination mac address*/
+	FEILD_SMAC_LEN 		= 6,			/* source mac address */
+	FEILD_VLAN_0_LEN	= 4,
+	FEILD_VLAN_1_LEN	= 4,
+	FEILD_L3_TYPE_LEN	= 2,	/* layer 3 protocol type */
+	FEILD_MPLS_2_LEN	= 4,		/* mpls2 header */
+	FEILD_MPLS_1_LEN	= 4,		/* mpls1 header */
+	FEILD_MPLS_0_LEN	= 4,		/* mpls0 header */
+	FEILD_CW_LEN			= 4, 			/* mpls control word */
+	FEILD_L3_HDR_LEN	= 20, 	/* layer 3 protocol header	*/
+	FEILD_L4_HDR_LEN	= 20, 	/* layer 4 protocol header */
+
 };
 
 
-struct KOFDPA_PKT_CB{
-	u64											port; 	/* every bit indicate a port, physical port number range is 0~63 */
+typedef struct kofdpa_pkt_feild_s {
+	uint16_t									offset; /* the feild location offset from the base address */
+	uint16_t									len; 		/* the feild length */
+}kofdpa_pkt_feild_t;
+
+typedef struct kofdpa_MetaData_s
+{
+  uint32_t    mplsL2Port;               /**< For MPLS L2 VPN classification. */
+  uint32_t    tunnelId;                 /**< For MPLS L2 VPN classification. */
+  uint32_t    mplsType;               /**< MPLS Type value used in Set-field action */
+	void				*pGrpInst;
+}kofdpa_MetaData_t;
+
+typedef struct kofdpaPktCb_s
+{
+	uint64_t								port; 	/* every bit indicate a port, physical port number range is 0~63 */
 	void 										*this;	/* pointer to self*/
 	uint32_t								len;		/* total len */
-	uint32_t								pkt_len;/* pkt len */
-	struct KOFDPA_PKT_FEILD dmac;		/* destination mac address*/
-	struct KOFDPA_PKT_FEILD	smac;		/* source mac address */
-	struct KOFDPA_PKT_FEILD	vlan_0;
-	struct KOFDPA_PKT_FEILD	vlan_1;
-	struct KOFDPA_PKT_FEILD	l3_type;/* layer 3 protocol type */
-	struct KOFDPA_PKT_FEILD	mpls_0;	/* mpls0 header */
-	struct KOFDPA_PKT_FEILD	mpls_1; /* mpls1 header */
-	struct KOFDPA_PKT_FEILD	mpls_2; /* mpls2 header */
-	struct KOFDPA_PKT_FEILD	cw; 		/* mpls control word */
-	struct KOFDPA_PKT_FEILD	dip; 		/* destination IP address */
-	struct KOFDPA_PKT_FEILD	sip; 		/* source IP address */
-	struct KOFDPA_PKT_FEILD	l4_type;/* layer 4 protocol type */
-	struct KOFDPA_PKT_FEILD	l4_dp;  /* layer 4 destination port */
-	struct KOFDPA_PKT_FEILD	l4_sp;  /* layer 4 source port */
-
-	struct KOFDPA_PKT_FEILD	data; 	/* payload */
-
-
-};
+	uint16_t								pkt_len;/* pkt len */
+	uint16_t								cur;		/* point current position in the packet */
+	uint16_t								pool_tail;		/* the tail postion of the memory pool for packet increase */
+	uint16_t								pool_head;		/* the head postion of the memory pool for packet increase */
+	kofdpa_pkt_feild_t 			feilds[FEILD_MAX];		/* packet feild info */
+	kofdpa_MetaData_t				meta_data;
+	void* 									action_set[2];
+}kofdpaPktCb_t;
 
 
 

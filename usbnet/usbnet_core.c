@@ -1177,7 +1177,7 @@ static void tx_complete (struct urb *urb)
 	struct usbnet		*dev = entry->dev;
 
 #ifdef DEV_NETMAP
-	//netmap_tx_irq(dev->net, 0);
+	netmap_tx_irq(dev->net, 0);
 #endif /* DEV_NETMAP */
 
 

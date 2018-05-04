@@ -88,7 +88,30 @@ int usbnet_reload_map(	struct netmap_adapter *na,
 
 
 
+int usbnet_pkt_tx_assemble(char *dst, kofdpaPktCb_t *pcb)
+{
+	int i,j ;
 
+	for(i = 0 , j = 0; i < FEILD_MAX; i++){ 
+		if(pcb->feilds[i].len){
+			memcpy(&dst[j],KDP_GET_FEILD_ADDR(pcb, i),pcb->feilds[i].len);	
+			j += pcb->feilds[i].len;
+		}
+	}
+
+	return j;
+}
+
+
+/*
+char tstPkt[64] = {
+		0x00, 0x0E, 0x5e, 0x00, 0x33, 0x3D, 0x00, 0x0E, 0xC6, 0xA0, 0xA1, 0x3D,
+		0x81, 0x00, 0x00, 0x0A, 0x08, 0x00, 0x45, 0x00, 0x00, 0x28, 0x5A, 0x16, 
+		0x40, 0x00, 0x80, 0x06, 0xE7, 0x08, 0xC0, 0xA8, 0x02, 0x69, 0x3D, 0x87,
+		0xB9, 0x18, 0xD2, 0xAD, 0x01, 0xBB, 0x1B, 0x41, 0x27, 0x82, 0x93, 0x8F,
+		0xA4, 0xE3, 0x50, 0x10, 0x03, 0xFC, 0xA2, 0x88, 0x00, 0x00
+};
+*/
 
 /*
  * Reconcile kernel and user view of the transmit ring.
@@ -105,14 +128,15 @@ usbnet_netmap_txsync(struct netmap_kring *kring, int flags)
 	u_int n;
 	u_int const lim = kring->nkr_num_slots - 1;
 	u_int const head = kring->rhead;
-	/* generate an interrupt approximately every half ring */
-	//u_int report_frequency = kring->nkr_num_slots >> 1;
 
 	/* device-specific */
 	struct usbnet_adapter 	*ua;
 	netdev_tx_t				rv;
 	struct sk_buff			*skb = NULL;
 
+
+
+	
 
 	ua = usbnet_adapter(ifp);
 
@@ -152,12 +176,16 @@ usbnet_netmap_txsync(struct netmap_kring *kring, int flags)
 			slot->flags &= ~(NS_REPORT | NS_BUF_CHANGED);
 
 			/* Fill the slot in the NIC ring. */
-			/*Todo*/
-			memcpy(skb->data,addr,len);
+			/*memcpy(skb->data,tstPkt,64);
+			skb->len = 64;*/
+			skb->len = usbnet_pkt_tx_assemble(skb->data,addr);
 			rv = usbnet_start_xmit (skb,ifp);
 			if(rv != NETDEV_TX_OK){
-
+				ua->tx_drop_pkts_cnt++;
 			}
+			else{
+				ua->tx_pkts_cnt++;
+			}	
 			
 			nm_i = nm_next(nm_i, lim);
 			nic_i = nm_next(nic_i, lim);
@@ -168,6 +196,8 @@ usbnet_netmap_txsync(struct netmap_kring *kring, int flags)
 		wmb();	/* synchronize writes to the NIC ring */
 
 	}
+
+	ND("ua tx_pkts: %lld , tx_drop_pkts: %lld",ua->tx_pkts_cnt,ua->tx_drop_pkts_cnt);
 
 	/*
 	 * Second part: reclaim buffers for completed transmissions.
@@ -383,24 +413,6 @@ int usbnet_netmap_init_buffers(struct net_device *dev)
 	struct netmap_slot		*slot;
 	int i, si;
 	void* vaddr;
-	struct KOFDPA_PKT_CB pcb = {
-		.port 		= 0,
-		.dmac 		= {.offset = RESERVED_BLOCK_SIZE + 0,	.len = 6},
-		.smac 		= {.offset = RESERVED_BLOCK_SIZE + 6,	.len = 6},
-		.vlan_0 	= {.offset = 0,.len = 4},
-		.vlan_1 	= {.offset = 0,.len = 4},
-		.l3_type	= {.offset = 0,.len = 2},
-		.mpls_0		= {.offset = 0,.len = 4},
-		.mpls_1		= {.offset = 0,.len = 4},
-		.mpls_2		= {.offset = 0,.len = 4},
-		.cw 			= {.offset = 0,.len = 4},
-		.dip 			= {.offset = 0,.len = 4},
-		.sip 			= {.offset = 0,.len = 4},
-		.l4_type 	= {.offset = 0,.len = 2},
-		.l4_dp		= {.offset = 0,.len = 2},
-		.l4_sp		= {.offset = 0,.len = 2},
-		.data			= {.offset = RESERVED_BLOCK_SIZE,.len = 0},
-	};
 
 
 	ND("usbnet_netmap_init_buffers enter");
@@ -431,12 +443,6 @@ int usbnet_netmap_init_buffers(struct net_device *dev)
 			si = netmap_idx_n2k(&na->rx_rings[0], i);
 			vaddr = NMB(na, slot + si);
 			ua->rx_ring[i].data_ptr = vaddr;
-			memcpy(vaddr,&pcb,sizeof(pcb));
-			//ua->rx_ring[i].in_use = SLOT_STATE_IDLE;
-			//*((u32*)vaddr + 8) = 0x11111111 * (i + 1);
-			//ua->rx_ring_skb[i] = build_skb(vaddr, 1500);
-
-			
 		}
 		ua->cur = 0;
 		ua->rdh = 0;

@@ -987,7 +987,7 @@ netmap_extra_alloc(struct netmap_adapter *na, uint32_t *head, uint32_t n)
 	uint32_t i, pos = 0; /* opaque, scan position in the bitmap */
 
 	NMA_LOCK(nmd);
-	D("netmap mem bufsize : %d", netmap_mem_bufsize(nmd));
+	ND("netmap mem bufsize : %d", netmap_mem_bufsize(nmd));
 	*head = 0;	/* default, 'null' index ie empty list */
 	for (i = 0 ; i < n; i++) {
 		uint32_t cur = *head;	/* save current head */
