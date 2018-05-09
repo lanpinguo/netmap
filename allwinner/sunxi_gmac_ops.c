@@ -336,8 +336,12 @@ int sunxi_int_status(void *iobase, struct geth_extra_stats *x)
 	if (intr_status & (TX_INT | RX_INT |
 			RX_EARLY_INT | TX_UA_INT)) {
 		x->normal_irq_n++;
-		if (intr_status & (TX_INT | RX_INT))
-				ret = handle_tx_rx;
+		if (intr_status & TX_INT){
+				ret = handle_tx;
+		}
+		else if(intr_status & RX_INT){
+			ret = handle_rx;
+		}
 	}
 	/* Clear the interrupt by writing a logic 1 to the CSR5[15-0] */
 	writel(intr_status & 0x3FFF, iobase + GETH_INT_STA);

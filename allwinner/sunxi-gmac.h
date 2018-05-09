@@ -228,7 +228,8 @@ enum rx_frame_status { /* IPC status */
 enum tx_dma_irq_status {
 	tx_hard_error = 1,
 	tx_hard_error_bump_tc = 2,
-	handle_tx_rx = 3,
+	handle_tx = 3,
+	handle_rx = 4,
 };
 
 struct geth_extra_stats {
@@ -284,7 +285,10 @@ struct geth_extra_stats {
 	unsigned long normal_irq_n;
 };
 
+#ifdef DEV_NETMAP
+#define RESERVED_BLOCK_SIZE		256
 
+#endif /*DEV_NETMAP*/
 int sunxi_mdio_read(void *,  int, int);
 int sunxi_mdio_write(void *, int, int, unsigned short);
 int sunxi_mdio_reset(void *);

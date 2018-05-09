@@ -37,6 +37,9 @@
 
 #include "sunxi-gmac.h"
 
+#define PKT_DEBUG
+
+
 #ifdef DEV_NETMAP
 #include <bsd_glue.h>
 #include <net/netmap.h>
@@ -206,31 +209,10 @@ static int geth_open(struct net_device *ndev);
 static void geth_tx_complete(struct geth_priv *priv);
 static void geth_rx_refill(struct net_device *ndev);
 
-
 #ifdef DEV_NETMAP
-void
-sunxi_netmap_attach(	struct net_device *ndev)
-{
-	struct netmap_adapter 	na;
-	struct geth_priv *priv;
-	
-	priv = netdev_priv(ndev);
+void sunxi_netmap_attach(	struct net_device *ndev);
 
-	bzero(&na, sizeof(na));
-
-	
-	na.ifp = ndev;
-	na.pdev = priv->dev;
-	na.num_tx_desc = 256;
-	na.num_rx_desc = 256;
-	na.nm_register = NULL;
-	na.nm_txsync = NULL;
-	na.nm_rxsync = NULL;
-	na.num_tx_rings = na.num_rx_rings = 1;
-	netmap_attach(&na);
-}
-
-#endif /* DEV_NETMAP */
+#endif
 
 #ifdef CONFIG_GETH_ATTRS
 static ssize_t adjust_bgs_show(struct device *dev, struct device_attribute * attr,char * buf)
@@ -1088,8 +1070,25 @@ static irqreturn_t geth_interrupt(int irq, void *dev_id)
 
 	status = sunxi_int_status(priv->base, (void *)(&priv->xstats));
 
-	if (likely(status == handle_tx_rx))
+
+
+	if (likely(status == handle_tx)){
+#ifdef DEV_NETMAP
+			if (netmap_tx_irq(ndev, 0))
+				return IRQ_HANDLED; /* cleaned ok */
+#endif /* DEV_NETMAP */
 		geth_schedule(priv);
+	}
+	else if (likely(status == handle_rx)){
+#ifdef DEV_NETMAP
+#define NETMAP_DUMMY &dummy
+		int dummy;
+		D("rx-irq recv");
+		if (netmap_rx_irq(ndev, 0, NETMAP_DUMMY))
+			return IRQ_HANDLED;
+#endif /* DEV_NETMAP */
+		geth_schedule(priv);
+	}
 	else if (unlikely(status == tx_hard_error_bump_tc)) {
 		netdev_info(ndev, "Do nothing for bump tc\n");
 	} else if(unlikely(status == tx_hard_error)){
@@ -1097,6 +1096,76 @@ static irqreturn_t geth_interrupt(int irq, void *dev_id)
 	}
 
 	return IRQ_HANDLED;
+}
+
+static int geth_up(struct net_device *ndev)
+{
+	struct geth_priv *priv = netdev_priv(ndev);
+	int ret = 0;
+
+
+	ret = sunxi_mac_reset((void *)priv->base, &sunxi_udelay, 10000);
+	if (ret) {
+		netdev_err(ndev, "Initialize hardware error\n");
+		goto desc_err;
+	}
+	sunxi_mac_init(priv->base, txmode, rxmode);
+	sunxi_set_umac(priv->base, ndev->dev_addr, 0);
+
+	memset(priv->dma_tx, 0, dma_desc_tx * sizeof(struct dma_desc));
+	memset(priv->dma_rx, 0, dma_desc_rx * sizeof(struct dma_desc));
+
+	desc_init_chain(priv->dma_rx, (unsigned long)priv->dma_rx_phy, dma_desc_rx);
+	desc_init_chain(priv->dma_tx, (unsigned long)priv->dma_tx_phy, dma_desc_tx);
+
+	priv->rx_clean = priv->rx_dirty = 0;
+	priv->tx_clean = priv->tx_dirty = 0;
+	geth_rx_refill(ndev);
+
+	/* Extra statistics */
+	memset(&priv->xstats, 0, sizeof(struct geth_extra_stats));
+
+	if (ndev->phydev)
+		phy_start(ndev->phydev);
+
+	sunxi_start_rx(priv->base, (unsigned long)((struct dma_desc *)
+				priv->dma_rx_phy + priv->rx_dirty));
+	sunxi_start_tx(priv->base, (unsigned long)((struct dma_desc *)
+				priv->dma_tx_phy + priv->tx_clean));
+
+	napi_enable(&priv->napi);
+	netif_start_queue(ndev);
+
+	/* Enable the Rx/Tx */
+	sunxi_mac_enable(priv->base);
+
+	/* Enable interrupt*/
+	sunxi_int_enable(priv->base);
+
+	/* For debug*/
+	/*sunxi_mac_loopback(priv->base, 1);*/
+
+	return 0;
+
+desc_err:
+err:
+
+	return ret;
+}
+
+static int geth_down(struct net_device *ndev)
+{
+	struct geth_priv *priv = netdev_priv(ndev);
+
+	netif_stop_queue(ndev);
+	napi_disable(&priv->napi);
+
+	netif_carrier_off(ndev);
+
+	/* Disable interrupt*/
+	sunxi_int_disable(priv->base);
+
+	return 0;
 }
 
 static int geth_open(struct net_device *ndev)
@@ -1193,7 +1262,7 @@ static int geth_stop(struct net_device *ndev)
 	netif_carrier_off(ndev);
 
 	/* Disable interrupt*/
-	sunxi_int_enable(priv->base);
+	sunxi_int_disable(priv->base);
 
 
 	/* Release PHY resources */
@@ -2154,6 +2223,11 @@ static int geth_remove(struct platform_device *pdev)
 	netif_napi_del(&priv->napi);
 	unregister_netdev(ndev);
 
+#ifdef DEV_NETMAP
+		netmap_detach(ndev);
+#endif /* DEV_NETMAP */	
+
+
 	devm_iounmap(&pdev->dev,(priv->base));
 	free_irq(ndev->irq, ndev);
 
@@ -2268,6 +2342,363 @@ static int __init set_mac_addr(char *str)
 }
 __setup("mac_addr=", set_mac_addr);
 #endif
+
+
+
+#ifdef DEV_NETMAP
+
+
+/*
+ * Make the tx and rx rings point to the netmap buffers.
+ */
+int sunxi_netmap_init_buffers(struct net_device *dev)
+{
+	struct geth_priv *priv;
+	
+	struct ifnet *ifp = dev;
+	struct netmap_adapter* na = NA(ifp);
+	struct netmap_slot* slot;
+	unsigned int i, r, si;
+	uint64_t paddr;
+
+	priv = netdev_priv(dev);
+
+	D("sunxi_netmap_init_buffers ");
+
+
+	if (!nm_native_on(na))
+		return 0;
+
+	for (r = 0; r < na->num_rx_rings; r++) {
+		struct dma_desc *desc;
+		slot = netmap_reset(na, NR_RX, r, 0);
+		if (!slot) {
+			D("Skipping RX ring %d, netmap mode not requested", r);
+			continue;
+		}
+
+		for (i = 0; i < dma_desc_rx; i++) {
+			si = netmap_idx_n2k(&na->rx_rings[r], i);
+			PNMB(na, slot + si, &paddr);
+			// netmap_load_map(...)
+			desc = &priv->dma_rx[i];
+			desc_buf_set(desc, (paddr + RESERVED_BLOCK_SIZE), priv->buf_sz);
+			desc_set_own(desc);
+			priv->rx_clean = circ_inc(priv->rx_clean, dma_desc_rx);
+		}
+
+		D("i now is %d", i);
+		wmb(); /* Force memory writes to complete */
+	}
+	return 1;
+}
+
+
+/*
+ * geth_dma_desc_init - initialize the RX/TX descriptor list
+ * @ndev: net device structure
+ * Description: initialize the list for dma.
+ */
+static int netmap_geth_dma_desc_init(struct net_device *ndev)
+{
+	struct geth_priv *priv = netdev_priv(ndev);
+	unsigned int buf_sz;
+
+
+	/* Set the size of buffer depend on the MTU & max buf size */
+	buf_sz = MAX_BUF_SZ;
+
+	priv->dma_tx = dma_alloc_coherent(priv->dev,
+					dma_desc_tx *
+					sizeof(struct dma_desc),
+					&priv->dma_tx_phy,
+					GFP_KERNEL);
+	if (!priv->dma_tx)
+		goto dma_tx_err;
+
+	priv->dma_rx = dma_alloc_coherent(priv->dev,
+					dma_desc_rx *
+					sizeof(struct dma_desc),
+					&priv->dma_rx_phy,
+					GFP_KERNEL);
+	if (!priv->dma_rx)
+		goto dma_rx_err;
+
+	priv->buf_sz = buf_sz;
+
+	return 0;
+
+dma_rx_err:
+	dma_free_coherent(priv->dev, dma_desc_rx * sizeof(struct dma_desc),
+			priv->dma_tx, priv->dma_tx_phy);
+dma_tx_err:
+
+	return -ENOMEM;
+
+}
+
+
+static int netmap_geth_up(struct net_device *ndev)
+{
+	struct geth_priv *priv = netdev_priv(ndev);
+	int ret = 0;
+
+	D("netmap_geth_up 1");
+
+	ret = sunxi_mac_reset((void *)priv->base, &sunxi_udelay, 10000);
+	if (ret) {
+		netdev_err(ndev, "Initialize hardware error\n");
+		goto desc_err;
+	}
+	sunxi_mac_init(priv->base, txmode, rxmode);
+	sunxi_set_umac(priv->base, ndev->dev_addr, 0);
+
+	D("netmap_geth_up 2");
+
+	memset(priv->dma_tx, 0, dma_desc_tx * sizeof(struct dma_desc));
+	memset(priv->dma_rx, 0, dma_desc_rx * sizeof(struct dma_desc));
+
+	desc_init_chain(priv->dma_rx, (unsigned long)priv->dma_rx_phy, dma_desc_rx);
+	desc_init_chain(priv->dma_tx, (unsigned long)priv->dma_tx_phy, dma_desc_tx);
+
+	D("netmap_geth_up 3");
+	priv->rx_clean = priv->rx_dirty = 0;
+	priv->tx_clean = priv->tx_dirty = 0;
+	sunxi_netmap_init_buffers(ndev);
+
+	/* Extra statistics */
+	memset(&priv->xstats, 0, sizeof(struct geth_extra_stats));
+
+	if (ndev->phydev)
+		phy_start(ndev->phydev);
+	D("netmap_geth_up 4");
+
+	sunxi_start_rx(priv->base, (unsigned long)((struct dma_desc *)
+				priv->dma_rx_phy + priv->rx_dirty));
+	sunxi_start_tx(priv->base, (unsigned long)((struct dma_desc *)
+				priv->dma_tx_phy + priv->tx_clean));
+	D("netmap_geth_up 5");
+
+	napi_enable(&priv->napi);
+	netif_start_queue(ndev);
+
+	/* Enable the Rx/Tx */
+	sunxi_mac_enable(priv->base);
+	D("netmap_geth_up 6");
+
+	/* Enable interrupt*/
+	sunxi_int_enable(priv->base);
+
+	D("netmap_geth_up 7");
+	/* For debug*/
+	/*sunxi_mac_loopback(priv->base, 1);*/
+
+	return 0;
+
+desc_err:
+	D("netmap_geth_up, ret=%d",ret);
+err:
+	D("err, ret=%d",ret);
+	return ret;
+}
+
+static int netmap_geth_down(struct net_device *ndev)
+{
+	struct geth_priv *priv = netdev_priv(ndev);
+
+	netif_stop_queue(ndev);
+	napi_disable(&priv->napi);
+
+	netif_carrier_off(ndev);
+
+	/* Disable interrupt*/
+	sunxi_int_disable(priv->base);
+
+	return 0;
+}
+
+
+
+/*
+ * Reconcile kernel and user view of the transmit ring.
+ */
+int
+sunxi_netmap_txsync(struct netmap_kring *kring, int flags)
+{
+	return 0;
+}
+
+
+
+
+/*
+ * Reconcile kernel and user view of the receive ring.
+ */
+int
+sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
+{
+	struct netmap_adapter *na = kring->na;
+	struct ifnet *ifp = na->ifp;
+	struct netmap_ring *ring = kring->ring;
+	u_int ring_nr = kring->ring_id;
+	u_int nm_i;	/* index into the netmap ring */
+	u_int nic_i;	/* index into the NIC ring */
+	u_int n;
+	u_int const lim = kring->nkr_num_slots - 1;
+	u_int const head = kring->rhead;
+	int force_update = (flags & NAF_FORCE_READ) || kring->nr_kflags & NKR_PENDINTR;
+
+	/* device-specific */
+	struct geth_priv *priv = netdev_priv(ifp);
+	struct dma_desc *rxr = priv->dma_rx;
+
+	D("rxsync: normal_irq_n = %ld",priv->xstats.normal_irq_n);
+
+
+	if (!netif_carrier_ok(ifp)) {
+		goto out;
+	}
+
+	if (head > lim)
+		return netmap_ring_reinit(kring);
+
+	rmb();
+
+	/*
+	 * First part: import newly received packets.
+	 */
+	if (netmap_no_pendintr || force_update) {
+		uint16_t slot_flags = kring->nkr_slot_flags;
+
+		nic_i =  priv->rx_dirty;;
+		nm_i = netmap_idx_n2k(kring, nic_i);
+
+		for (n = 0; ; n++) {
+			struct dma_desc *curr = &rxr[nic_i];
+
+			if (desc_get_own(curr))
+				break;
+
+			ring->slot[nm_i].len = desc_rx_frame_len(curr);
+			D("RX PKT: LEN = %d",ring->slot[nm_i].len);
+			ring->slot[nm_i].flags = slot_flags;
+			nm_i = nm_next(nm_i, lim);
+			nic_i = nm_next(nic_i, lim);
+		}
+		if (n) { /* update the state variables */
+			priv->rx_dirty = nic_i;
+			kring->nr_hwtail = nm_i;
+		}
+		kring->nr_kflags &= ~NKR_PENDINTR;
+	}
+
+	/*
+	 * Second part: skip past packets that userspace has released.
+	 */
+	nm_i = kring->nr_hwcur;
+	if (nm_i != head) {
+		nic_i = netmap_idx_k2n(kring, nm_i);
+		for (n = 0; nm_i != head; n++) {
+			struct netmap_slot *slot = &ring->slot[nm_i];
+			uint64_t paddr;
+			void *addr = PNMB(na, slot, &paddr);
+			struct dma_desc *curr = &rxr[nic_i];;
+
+			if (addr == NETMAP_BUF_BASE(na)) /* bad buf */
+				goto ring_reset;
+			if (slot->flags & NS_BUF_CHANGED) {
+				// netmap_reload_map(...)
+				desc_buf_set(curr, (paddr + RESERVED_BLOCK_SIZE), priv->buf_sz);
+				slot->flags &= ~NS_BUF_CHANGED;
+			}
+			desc_set_own(curr);
+			nm_i = nm_next(nm_i, lim);
+			nic_i = nm_next(nic_i, lim);
+		}
+		kring->nr_hwcur = head;
+		priv->rx_clean = nic_i; // XXX not really used
+		wmb();
+		/*
+		 * IMPORTANT: we must leave one free slot in the ring,
+		 * so move nic_i back by one unit
+		 */
+		nic_i = nm_prev(nic_i, lim);
+	}
+
+out:
+
+	return 0;
+
+ring_reset:
+	return netmap_ring_reinit(kring);
+}
+
+
+
+
+/*
+ * Register/unregister. We are already under netmap lock.
+ */
+int
+sunxi_netmap_reg(struct netmap_adapter *na, int onoff)
+{
+	struct ifnet *ifp = na->ifp;
+	struct geth_priv *priv;
+	
+	priv = netdev_priv(ifp);
+	/* protect against other reinit */
+
+	if (netif_running(priv->ndev)){
+		if (nm_native_on(na)){
+			netmap_geth_down(priv->ndev);
+		}
+		else{
+			geth_down(priv->ndev);
+		}
+	}
+
+	/* enable or disable flags and callbacks in na and ifp */
+	D("onoff:%d",onoff);
+	if (onoff) {
+		nm_set_native_flags(na);
+		netmap_geth_up(priv->ndev);
+	} else {
+		nm_clear_native_flags(na);
+		geth_up(priv->ndev);
+		
+	}
+
+	return (0);
+}
+
+
+
+
+void
+sunxi_netmap_attach(	struct net_device *ndev)
+{
+	struct netmap_adapter 	na;
+	struct geth_priv *priv;
+	
+	priv = netdev_priv(ndev);
+
+	bzero(&na, sizeof(na));
+
+	
+	na.ifp = ndev;
+	na.pdev = priv->dev;
+	na.num_tx_desc = 256;
+	na.num_rx_desc = 256;
+	na.nm_register = sunxi_netmap_reg;
+	na.nm_txsync = sunxi_netmap_txsync;
+	na.nm_rxsync = sunxi_netmap_rxsync;
+	na.num_tx_rings = na.num_rx_rings = 1;
+	netmap_attach(&na);
+}
+
+#endif /* DEV_NETMAP */
+
+
 
 MODULE_DESCRIPTION("Allwinner Gigabit Ethernet driver");
 MODULE_AUTHOR("Sugar <shugeLinux@gmail.com>");
