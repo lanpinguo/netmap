@@ -555,6 +555,17 @@ void sunxi_int_disable(void *iobase)
 	writel(0, iobase + GETH_INT_EN);
 }
 
+
+int sunxi_get_cur_desc_addr(void *iobase)
+{
+	return readl(iobase + GETH_RX_CUR_DESC);
+}
+
+int sunxi_get_cur_buf_addr(void *iobase)
+{
+	return readl(iobase + GETH_RX_CUR_BUF);
+}
+
 void desc_buf_set(struct dma_desc *desc, unsigned long paddr, int size)
 {
 	desc->desc1.all &= (~((1<<11) - 1));

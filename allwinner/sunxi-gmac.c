@@ -131,6 +131,7 @@ MODULE_PARM_DESC(rx_delay, "Adjust receive clock delay, value: 0~31");
 
 struct geth_priv {
 	struct dma_desc *dma_tx;
+	int desc_tx_used[DMA_DESC_TX /sizeof(int) + 1];
 	struct sk_buff **tx_sk;
 	unsigned int tx_clean;
 	unsigned int tx_dirty;
@@ -139,6 +140,7 @@ struct geth_priv {
 	unsigned long buf_sz;
 
 	struct dma_desc *dma_rx;
+	int desc_rx_used[DMA_DESC_RX /sizeof(int) + 1];
 	struct sk_buff **rx_sk;
 	unsigned int rx_clean;
 	unsigned int rx_dirty;
@@ -213,6 +215,110 @@ static void geth_rx_refill(struct net_device *ndev);
 void sunxi_netmap_attach(	struct net_device *ndev);
 
 #endif
+
+
+static int is_desc_tx_used(struct geth_priv *priv,int index)
+{
+	int tst_bit;
+	int tst_block;
+
+	
+	if(index > DMA_DESC_TX - 1){
+		return 1;
+	}
+
+	tst_block = index / sizeof(int);
+	tst_bit = 1 << (index % sizeof(int));
+
+	return (priv->desc_tx_used[tst_block] & tst_bit);
+
+}
+
+static int is_desc_rx_used(struct geth_priv *priv,int index)
+{
+	int tst_bit;
+	int tst_block;
+
+	
+	if(index > DMA_DESC_RX - 1){
+		return 1;
+	}
+
+	tst_block = index / sizeof(int);
+	tst_bit = 1 << (index % sizeof(int));
+
+	return (priv->desc_rx_used[tst_block] & tst_bit);
+}
+
+static void desc_tx_state_set(struct geth_priv *priv,int index)
+{
+	int set_bit;
+	int set_block;
+
+	
+	if(index > DMA_DESC_TX - 1){
+		return ;
+	}
+
+	set_block = index / sizeof(int);
+	set_bit = 1 << (index % sizeof(int));
+
+	priv->desc_tx_used[set_block] |= set_bit;
+
+}
+
+static void desc_rx_state_set(struct geth_priv *priv,int index)
+{
+	int set_bit;
+	int set_block;
+
+	
+	if(index > DMA_DESC_RX - 1){
+		return ;
+	}
+
+	set_block = index / sizeof(int);
+	set_bit = 1 << (index % sizeof(int));
+
+	priv->desc_rx_used[set_block] |= set_bit;
+
+}
+
+static void desc_tx_state_clear(struct geth_priv *priv,int index)
+{
+	int clr_bit;
+	int clr_block;
+
+	
+	if(index > DMA_DESC_TX - 1){
+		return ;
+	}
+
+	clr_block = index / sizeof(int);
+	clr_bit = ~(1 << (index % sizeof(int)));
+
+	priv->desc_tx_used[clr_block] &= clr_bit;
+
+}
+
+static void desc_rx_state_clear(struct geth_priv *priv,int index)
+{
+	int clr_bit;
+	int clr_block;
+
+	
+	if(index > DMA_DESC_RX - 1){
+		return ;
+	}
+
+	clr_block = index / sizeof(int);
+	clr_bit = ~(1 << (index % sizeof(int)));
+
+	priv->desc_rx_used[clr_block] &= clr_bit;
+}
+
+
+
 
 #ifdef CONFIG_GETH_ATTRS
 static ssize_t adjust_bgs_show(struct device *dev, struct device_attribute * attr,char * buf)
@@ -665,6 +771,7 @@ static void geth_rx_refill(struct net_device *ndev)
 			paddr = dma_map_single(priv->dev, sk->data,
 					priv->buf_sz, DMA_FROM_DEVICE);
 			desc_buf_set(desc, paddr, priv->buf_sz);
+			desc_rx_state_set(priv,entry);
 		}
 
 		wmb();
@@ -728,16 +835,44 @@ tx_sk_err:
 
 }
 
+static void geth_dma_unmap_rx_desc(struct geth_priv *priv)
+{
+	int i;
+
+	for (i = 0; i < dma_desc_rx; i++) {
+		if (is_desc_rx_used(priv, i)) {
+			struct dma_desc *desc = priv->dma_rx + i;
+			dma_unmap_single(priv->dev, (u32)desc_buf_get_addr(desc),
+					 desc_buf_get_len(desc),
+					 DMA_FROM_DEVICE);
+			desc_rx_state_clear(priv,i);					 
+		}
+	}
+}
+
+static void geth_dma_unmap_tx_desc(struct geth_priv *priv)
+{
+	int i;
+
+	for (i = 0; i < dma_desc_tx; i++) {
+		if (is_desc_tx_used(priv, i)) {
+			struct dma_desc *desc = priv->dma_tx + i;
+			if (desc_buf_get_addr(desc))
+				dma_unmap_single(priv->dev, (u32)desc_buf_get_addr(desc),
+						 desc_buf_get_len(desc),
+						 DMA_TO_DEVICE);
+			desc_tx_state_clear(priv,i);
+		}
+	}
+}
+
+
 static void geth_free_rx_sk(struct geth_priv *priv)
 {
 	int i;
 
 	for (i = 0; i < dma_desc_rx; i++) {
 		if (priv->rx_sk[i] != NULL) {
-			struct dma_desc *desc = priv->dma_rx + i;
-			dma_unmap_single(priv->dev, (u32)desc_buf_get_addr(desc),
-					 desc_buf_get_len(desc),
-					 DMA_FROM_DEVICE);
 			dev_kfree_skb_any(priv->rx_sk[i]);
 			priv->rx_sk[i] = NULL;
 		}
@@ -750,11 +885,6 @@ static void geth_free_tx_sk(struct geth_priv *priv)
 
 	for (i = 0; i < dma_desc_tx; i++) {
 		if (priv->tx_sk[i] != NULL) {
-			struct dma_desc *desc = priv->dma_tx + i;
-			if (desc_buf_get_addr(desc))
-				dma_unmap_single(priv->dev, (u32)desc_buf_get_addr(desc),
-						 desc_buf_get_len(desc),
-						 DMA_TO_DEVICE);
 			dev_kfree_skb_any(priv->tx_sk[i]);
 			priv->tx_sk[i] = NULL;
 		}
@@ -1083,7 +1213,8 @@ static irqreturn_t geth_interrupt(int irq, void *dev_id)
 #ifdef DEV_NETMAP
 #define NETMAP_DUMMY &dummy
 		int dummy;
-		D("rx-irq recv");
+		D("rx-irq recv desc @ %08x, buf @ %08x",sunxi_get_cur_desc_addr(priv->base),
+			sunxi_get_cur_buf_addr(priv->base));
 		if (netmap_rx_irq(ndev, 0, NETMAP_DUMMY))
 			return IRQ_HANDLED;
 #endif /* DEV_NETMAP */
@@ -1104,29 +1235,9 @@ static int geth_up(struct net_device *ndev)
 	int ret = 0;
 
 
-	ret = sunxi_mac_reset((void *)priv->base, &sunxi_udelay, 10000);
-	if (ret) {
-		netdev_err(ndev, "Initialize hardware error\n");
-		goto desc_err;
-	}
-	sunxi_mac_init(priv->base, txmode, rxmode);
-	sunxi_set_umac(priv->base, ndev->dev_addr, 0);
-
-	memset(priv->dma_tx, 0, dma_desc_tx * sizeof(struct dma_desc));
-	memset(priv->dma_rx, 0, dma_desc_rx * sizeof(struct dma_desc));
-
-	desc_init_chain(priv->dma_rx, (unsigned long)priv->dma_rx_phy, dma_desc_rx);
-	desc_init_chain(priv->dma_tx, (unsigned long)priv->dma_tx_phy, dma_desc_tx);
-
 	priv->rx_clean = priv->rx_dirty = 0;
 	priv->tx_clean = priv->tx_dirty = 0;
 	geth_rx_refill(ndev);
-
-	/* Extra statistics */
-	memset(&priv->xstats, 0, sizeof(struct geth_extra_stats));
-
-	if (ndev->phydev)
-		phy_start(ndev->phydev);
 
 	sunxi_start_rx(priv->base, (unsigned long)((struct dma_desc *)
 				priv->dma_rx_phy + priv->rx_dirty));
@@ -1157,6 +1268,10 @@ static int geth_down(struct net_device *ndev)
 {
 	struct geth_priv *priv = netdev_priv(ndev);
 
+	sunxi_stop_rx(priv->base);
+	sunxi_stop_tx(priv->base);
+
+
 	netif_stop_queue(ndev);
 	napi_disable(&priv->napi);
 
@@ -1164,6 +1279,19 @@ static int geth_down(struct net_device *ndev)
 
 	/* Disable interrupt*/
 	sunxi_int_disable(priv->base);
+
+
+	netif_tx_lock_bh(ndev);
+
+	/* unmap dma buffers before release sk_buff */
+	geth_dma_unmap_rx_desc(priv);
+	geth_dma_unmap_tx_desc(priv);
+	/* Release the DMA TX/RX socket buffers */
+	geth_free_rx_sk(priv);
+	geth_free_tx_sk(priv);
+	netif_tx_unlock_bh(ndev);
+
+
 
 	return 0;
 }
@@ -1279,6 +1407,9 @@ static int geth_stop(struct net_device *ndev)
 #endif
 
 	netif_tx_lock_bh(ndev);
+	/* unmap dma buffers before release sk_buff */
+	geth_dma_unmap_rx_desc(priv);
+	geth_dma_unmap_tx_desc(priv);
 	/* Release the DMA TX/RX socket buffers */
 	geth_free_rx_sk(priv);
 	geth_free_tx_sk(priv);
@@ -1320,6 +1451,7 @@ static void geth_tx_complete(struct geth_priv *priv)
 
 		dma_unmap_single(priv->dev, (u32)desc_buf_get_addr(desc),
 				desc_buf_get_len(desc), DMA_TO_DEVICE);
+		desc_tx_state_clear(priv,entry);
 
 		skb = priv->tx_sk[entry];
 		priv->tx_sk[entry] = NULL;
@@ -1391,6 +1523,7 @@ static netdev_tx_t geth_xmit(struct sk_buff *skb, struct net_device *ndev)
 			return -EIO;
 		}
 		desc_buf_set(desc, paddr, tmp_len);
+		desc_tx_state_set(priv,entry);
 		/* Don't set the first's own bit, here */
 		if (first != desc) {
 			priv->tx_sk[entry] = NULL;
@@ -1414,6 +1547,7 @@ static netdev_tx_t geth_xmit(struct sk_buff *skb, struct net_device *ndev)
 
 		desc_buf_set(desc, paddr, len);
 		desc_set_own(desc);
+		desc_tx_state_set(priv,entry);
 		priv->tx_sk[entry] = NULL;
 		entry = circ_inc(entry, dma_desc_tx);
 	}
@@ -2378,7 +2512,7 @@ int sunxi_netmap_init_buffers(struct net_device *dev)
 		}
 
 		for (i = 0; i < dma_desc_rx; i++) {
-			si = netmap_idx_n2k(&na->rx_rings[r], i);
+			si =  i;
 			PNMB(na, slot + si, &paddr);
 			// netmap_load_map(...)
 			desc = &priv->dma_rx[i];
@@ -2394,50 +2528,6 @@ int sunxi_netmap_init_buffers(struct net_device *dev)
 }
 
 
-/*
- * geth_dma_desc_init - initialize the RX/TX descriptor list
- * @ndev: net device structure
- * Description: initialize the list for dma.
- */
-static int netmap_geth_dma_desc_init(struct net_device *ndev)
-{
-	struct geth_priv *priv = netdev_priv(ndev);
-	unsigned int buf_sz;
-
-
-	/* Set the size of buffer depend on the MTU & max buf size */
-	buf_sz = MAX_BUF_SZ;
-
-	priv->dma_tx = dma_alloc_coherent(priv->dev,
-					dma_desc_tx *
-					sizeof(struct dma_desc),
-					&priv->dma_tx_phy,
-					GFP_KERNEL);
-	if (!priv->dma_tx)
-		goto dma_tx_err;
-
-	priv->dma_rx = dma_alloc_coherent(priv->dev,
-					dma_desc_rx *
-					sizeof(struct dma_desc),
-					&priv->dma_rx_phy,
-					GFP_KERNEL);
-	if (!priv->dma_rx)
-		goto dma_rx_err;
-
-	priv->buf_sz = buf_sz;
-
-	return 0;
-
-dma_rx_err:
-	dma_free_coherent(priv->dev, dma_desc_rx * sizeof(struct dma_desc),
-			priv->dma_tx, priv->dma_tx_phy);
-dma_tx_err:
-
-	return -ENOMEM;
-
-}
-
-
 static int netmap_geth_up(struct net_device *ndev)
 {
 	struct geth_priv *priv = netdev_priv(ndev);
@@ -2445,32 +2535,11 @@ static int netmap_geth_up(struct net_device *ndev)
 
 	D("netmap_geth_up 1");
 
-	ret = sunxi_mac_reset((void *)priv->base, &sunxi_udelay, 10000);
-	if (ret) {
-		netdev_err(ndev, "Initialize hardware error\n");
-		goto desc_err;
-	}
-	sunxi_mac_init(priv->base, txmode, rxmode);
-	sunxi_set_umac(priv->base, ndev->dev_addr, 0);
-
-	D("netmap_geth_up 2");
-
-	memset(priv->dma_tx, 0, dma_desc_tx * sizeof(struct dma_desc));
-	memset(priv->dma_rx, 0, dma_desc_rx * sizeof(struct dma_desc));
-
-	desc_init_chain(priv->dma_rx, (unsigned long)priv->dma_rx_phy, dma_desc_rx);
-	desc_init_chain(priv->dma_tx, (unsigned long)priv->dma_tx_phy, dma_desc_tx);
-
-	D("netmap_geth_up 3");
 	priv->rx_clean = priv->rx_dirty = 0;
 	priv->tx_clean = priv->tx_dirty = 0;
 	sunxi_netmap_init_buffers(ndev);
 
-	/* Extra statistics */
-	memset(&priv->xstats, 0, sizeof(struct geth_extra_stats));
 
-	if (ndev->phydev)
-		phy_start(ndev->phydev);
 	D("netmap_geth_up 4");
 
 	sunxi_start_rx(priv->base, (unsigned long)((struct dma_desc *)
@@ -2505,6 +2574,10 @@ err:
 static int netmap_geth_down(struct net_device *ndev)
 {
 	struct geth_priv *priv = netdev_priv(ndev);
+
+	sunxi_stop_rx(priv->base);
+	sunxi_stop_tx(priv->base);
+
 
 	netif_stop_queue(ndev);
 	napi_disable(&priv->napi);
@@ -2569,9 +2642,10 @@ sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 	 */
 	if (netmap_no_pendintr || force_update) {
 		uint16_t slot_flags = kring->nkr_slot_flags;
+		uint64_t paddr;
 
 		nic_i =  priv->rx_dirty;;
-		nm_i = netmap_idx_n2k(kring, nic_i);
+		nm_i = nic_i;
 
 		for (n = 0; ; n++) {
 			struct dma_desc *curr = &rxr[nic_i];
@@ -2580,7 +2654,15 @@ sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 				break;
 
 			ring->slot[nm_i].len = desc_rx_frame_len(curr);
-			D("RX PKT: LEN = %d",ring->slot[nm_i].len);
+			PNMB(na, &ring->slot[nm_i], &paddr);
+			D("RX PKT: desc @ %p, buf @ %p,LEN = %d",((struct dma_desc *)	priv->dma_rx_phy + nic_i),
+				(void*)(paddr + RESERVED_BLOCK_SIZE),ring->slot[nm_i].len);
+			D("desc->desc2 = %08x",curr->desc2);
+			printk("======RX PKT DATA: ============\n");
+			/* dump the packet */
+			print_hex_dump(KERN_DEBUG, "slot->data: ", DUMP_PREFIX_NONE,
+					16, 1, (NMB(na,&ring->slot[nm_i]) + RESERVED_BLOCK_SIZE), 64, true);
+
 			ring->slot[nm_i].flags = slot_flags;
 			nm_i = nm_next(nm_i, lim);
 			nic_i = nm_next(nic_i, lim);
@@ -2597,7 +2679,7 @@ sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 	 */
 	nm_i = kring->nr_hwcur;
 	if (nm_i != head) {
-		nic_i = netmap_idx_k2n(kring, nm_i);
+		nic_i = nm_i;
 		for (n = 0; nm_i != head; n++) {
 			struct netmap_slot *slot = &ring->slot[nm_i];
 			uint64_t paddr;

@@ -322,6 +322,8 @@ int desc_get_rx_status(struct dma_desc *desc, struct geth_extra_stats *x);
 int desc_get_own(struct dma_desc *desc);
 int desc_get_tx_ls(struct dma_desc *desc);
 int desc_rx_frame_len(struct dma_desc *desc);
+int sunxi_get_cur_desc_addr(void *iobase);
+int sunxi_get_cur_buf_addr(void *iobase);
 
 int sunxi_mac_reset(void *iobase, void (*mdelay)(int), int n);
 int sunxi_geth_register(void *iobase, int version, unsigned int div);
