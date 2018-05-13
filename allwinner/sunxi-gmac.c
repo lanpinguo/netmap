@@ -1256,7 +1256,7 @@ static int geth_up(struct net_device *ndev)
 				priv->dma_tx_phy + priv->tx_clean));
 
 	napi_enable(&priv->napi);
-	netif_start_queue(ndev);
+	//netif_start_queue(ndev);
 
 	/* Enable the Rx/Tx */
 	sunxi_mac_enable(priv->base);
@@ -1292,7 +1292,7 @@ static int geth_down(struct net_device *ndev)
 	sunxi_int_disable(priv->base);
 
 	usleep_range(1000, 2000);
-	napi_complete(&priv->napi);
+	
 
 	netif_tx_lock_bh(ndev);
 
@@ -1684,7 +1684,7 @@ static int geth_poll(struct napi_struct *napi, int budget)
 	na = NA(priv->ndev);
 
 	if (nm_native_on(na)){
-		//napi_complete(napi);
+		napi_complete(napi);
 		return 0;
 	}
 #endif
@@ -2767,6 +2767,8 @@ sunxi_netmap_reg(struct netmap_adapter *na, int onoff)
 	D("onoff:%d",onoff);
 	if (onoff) {
 		nm_set_native_flags(na);
+		geth_schedule(priv);
+		usleep_range(1000, 2000);
 		netmap_geth_up(priv->ndev);
 	} else {
 		nm_clear_native_flags(na);
