@@ -56,8 +56,8 @@
 
 #define PHY_POWER_ON 1
 
-#define DMA_DESC_RX	256
-#define DMA_DESC_TX	256
+#define DMA_DESC_RX	8
+#define DMA_DESC_TX	8
 #define BUDGET		(dma_desc_rx/4)
 #define TX_THRESH	(dma_desc_tx/4)
 
@@ -771,6 +771,7 @@ static void geth_rx_refill(struct net_device *ndev)
 			paddr = dma_map_single(priv->dev, sk->data,
 					priv->buf_sz, DMA_FROM_DEVICE);
 			desc_buf_set(desc, paddr, priv->buf_sz);
+			/*D("sunxi desc %d ==> phy %p",entry,(void*)(paddr));*/
 			desc_rx_state_set(priv,entry);
 		}
 
@@ -1165,10 +1166,17 @@ static void geth_clk_disable(struct geth_priv *priv)
 
 static void geth_tx_err(struct geth_priv *priv)
 {
+
+#ifdef DEV_NETMAP
+	D("geth tx err");
+	priv->ndev->stats.tx_errors++;
+	return;
+#endif	
 	netif_stop_queue(priv->ndev);
 
 	sunxi_stop_tx(priv->base);
-
+	
+	geth_dma_unmap_tx_desc(priv);
 	geth_free_tx_sk(priv);
 	memset(priv->dma_tx, 0, dma_desc_tx * sizeof(struct dma_desc));
 	desc_init_chain(priv->dma_tx, (unsigned long)priv->dma_tx_phy, dma_desc_tx);
@@ -1204,10 +1212,12 @@ static irqreturn_t geth_interrupt(int irq, void *dev_id)
 
 	if (likely(status == handle_tx)){
 #ifdef DEV_NETMAP
-			if (netmap_tx_irq(ndev, 0))
+			D("tx-irq ");
+			if (netmap_tx_irq(ndev, 0)){
 				return IRQ_HANDLED; /* cleaned ok */
+			}	
 #endif /* DEV_NETMAP */
-		geth_schedule(priv);
+		//geth_schedule(priv);
 	}
 	else if (likely(status == handle_rx)){
 #ifdef DEV_NETMAP
@@ -1215,8 +1225,9 @@ static irqreturn_t geth_interrupt(int irq, void *dev_id)
 		int dummy;
 		D("rx-irq recv desc @ %08x, buf @ %08x",sunxi_get_cur_desc_addr(priv->base),
 			sunxi_get_cur_buf_addr(priv->base));
-		if (netmap_rx_irq(ndev, 0, NETMAP_DUMMY))
+		if (netmap_rx_irq(ndev, 0, NETMAP_DUMMY)){
 			return IRQ_HANDLED;
+		}
 #endif /* DEV_NETMAP */
 		geth_schedule(priv);
 	}
@@ -1272,10 +1283,10 @@ static int geth_down(struct net_device *ndev)
 	sunxi_stop_tx(priv->base);
 
 
-	netif_stop_queue(ndev);
+	//netif_stop_queue(ndev);
 	napi_disable(&priv->napi);
 
-	netif_carrier_off(ndev);
+	//netif_carrier_off(ndev);
 
 	/* Disable interrupt*/
 	sunxi_int_disable(priv->base);
@@ -1665,6 +1676,14 @@ static int geth_poll(struct napi_struct *napi, int budget)
 	int work_done = 0;
   /*int clk_reg;
 	printk(KERN_ERR"geth_poll: budget=0x%x\n",budget);*/
+
+#ifdef DEV_NETMAP
+	struct netmap_adapter *na ;
+	na = NA(priv->ndev);
+
+	if (nm_native_on(na))
+		return 0;
+#endif
 
 	geth_tx_complete(priv);
 
@@ -2515,6 +2534,7 @@ int sunxi_netmap_init_buffers(struct net_device *dev)
 			si =  i;
 			PNMB(na, slot + si, &paddr);
 			// netmap_load_map(...)
+			D("desc %d ==> phy %p",i,(void*)(paddr + RESERVED_BLOCK_SIZE));
 			desc = &priv->dma_rx[i];
 			desc_buf_set(desc, (paddr + RESERVED_BLOCK_SIZE), priv->buf_sz);
 			desc_set_own(desc);
@@ -2540,25 +2560,21 @@ static int netmap_geth_up(struct net_device *ndev)
 	sunxi_netmap_init_buffers(ndev);
 
 
-	D("netmap_geth_up 4");
-
 	sunxi_start_rx(priv->base, (unsigned long)((struct dma_desc *)
 				priv->dma_rx_phy + priv->rx_dirty));
 	sunxi_start_tx(priv->base, (unsigned long)((struct dma_desc *)
 				priv->dma_tx_phy + priv->tx_clean));
-	D("netmap_geth_up 5");
 
-	napi_enable(&priv->napi);
-	netif_start_queue(ndev);
-
-	/* Enable the Rx/Tx */
-	sunxi_mac_enable(priv->base);
-	D("netmap_geth_up 6");
+	//napi_enable(&priv->napi);
+	//netif_start_queue(ndev);
 
 	/* Enable interrupt*/
 	sunxi_int_enable(priv->base);
+	
+	/* Enable the Rx/Tx */
+	sunxi_mac_enable(priv->base);
 
-	D("netmap_geth_up 7");
+
 	/* For debug*/
 	/*sunxi_mac_loopback(priv->base, 1);*/
 
@@ -2579,10 +2595,10 @@ static int netmap_geth_down(struct net_device *ndev)
 	sunxi_stop_tx(priv->base);
 
 
-	netif_stop_queue(ndev);
-	napi_disable(&priv->napi);
+	//netif_stop_queue(ndev);
+	//napi_disable(&priv->napi);
 
-	netif_carrier_off(ndev);
+	//netif_carrier_off(ndev);
 
 	/* Disable interrupt*/
 	sunxi_int_disable(priv->base);
@@ -2610,6 +2626,7 @@ sunxi_netmap_txsync(struct netmap_kring *kring, int flags)
 int
 sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 {
+#if 1
 	struct netmap_adapter *na = kring->na;
 	struct ifnet *ifp = na->ifp;
 	struct netmap_ring *ring = kring->ring;
@@ -2629,12 +2646,14 @@ sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 
 
 	if (!netif_carrier_ok(ifp)) {
+		D("netif_carrier_ok");
 		goto out;
 	}
 
-	if (head > lim)
+	if (head > lim){
+		D("head %d, lim %d",head,lim);
 		return netmap_ring_reinit(kring);
-
+	}
 	rmb();
 
 	/*
@@ -2647,25 +2666,28 @@ sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 		nic_i =  priv->rx_dirty;;
 		nm_i = nic_i;
 
-		for (n = 0; ; n++) {
+		for (n = 0; n < dma_desc_rx ; n++) {
 			struct dma_desc *curr = &rxr[nic_i];
 
-			if (desc_get_own(curr))
+			if (desc_get_own(curr)){
+				ND("dma_desc @ %p",((struct dma_desc *)	priv->dma_rx_phy + nic_i));
 				break;
+			}	
 
 			ring->slot[nm_i].len = desc_rx_frame_len(curr);
 			PNMB(na, &ring->slot[nm_i], &paddr);
-			D("RX PKT: desc @ %p, buf @ %p,LEN = %d",((struct dma_desc *)	priv->dma_rx_phy + nic_i),
+			ND("RX PKT: desc @ %p, buf @ %p,LEN = %d",((struct dma_desc *)	priv->dma_rx_phy + nic_i),
 				(void*)(paddr + RESERVED_BLOCK_SIZE),ring->slot[nm_i].len);
-			D("desc->desc2 = %08x",curr->desc2);
+			ND("desc->desc2 = %08x",curr->desc2);
+#if 0			
 			printk("======RX PKT DATA: ============\n");
 			/* dump the packet */
 			print_hex_dump(KERN_DEBUG, "slot->data: ", DUMP_PREFIX_NONE,
 					16, 1, (NMB(na,&ring->slot[nm_i]) + RESERVED_BLOCK_SIZE), 64, true);
-
+#endif
 			ring->slot[nm_i].flags = slot_flags;
 			nm_i = nm_next(nm_i, lim);
-			nic_i = nm_next(nic_i, lim);
+			nic_i = circ_inc(nic_i, dma_desc_rx);
 		}
 		if (n) { /* update the state variables */
 			priv->rx_dirty = nic_i;
@@ -2690,21 +2712,18 @@ sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 				goto ring_reset;
 			if (slot->flags & NS_BUF_CHANGED) {
 				// netmap_reload_map(...)
-				desc_buf_set(curr, (paddr + RESERVED_BLOCK_SIZE), priv->buf_sz);
 				slot->flags &= ~NS_BUF_CHANGED;
 			}
+			desc_buf_set(curr, (paddr + RESERVED_BLOCK_SIZE), priv->buf_sz);
 			desc_set_own(curr);
+			ND("new RX PKT: desc @ %p, buf @ %p",((struct dma_desc *)	priv->dma_rx_phy + nic_i),
+				(void*)(paddr + RESERVED_BLOCK_SIZE));
 			nm_i = nm_next(nm_i, lim);
-			nic_i = nm_next(nic_i, lim);
+			nic_i = circ_inc(nic_i, dma_desc_rx);
 		}
 		kring->nr_hwcur = head;
 		priv->rx_clean = nic_i; // XXX not really used
 		wmb();
-		/*
-		 * IMPORTANT: we must leave one free slot in the ring,
-		 * so move nic_i back by one unit
-		 */
-		nic_i = nm_prev(nic_i, lim);
 	}
 
 out:
@@ -2713,6 +2732,9 @@ out:
 
 ring_reset:
 	return netmap_ring_reinit(kring);
+#else
+	return 0;
+#endif 	
 }
 
 
@@ -2769,8 +2791,8 @@ sunxi_netmap_attach(	struct net_device *ndev)
 	
 	na.ifp = ndev;
 	na.pdev = priv->dev;
-	na.num_tx_desc = 256;
-	na.num_rx_desc = 256;
+	na.num_tx_desc = dma_desc_tx;
+	na.num_rx_desc = dma_desc_rx;
 	na.nm_register = sunxi_netmap_reg;
 	na.nm_txsync = sunxi_netmap_txsync;
 	na.nm_rxsync = sunxi_netmap_rxsync;
