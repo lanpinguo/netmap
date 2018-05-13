@@ -1291,6 +1291,8 @@ static int geth_down(struct net_device *ndev)
 	/* Disable interrupt*/
 	sunxi_int_disable(priv->base);
 
+	usleep_range(1000, 2000);
+	napi_complete(&priv->napi);
 
 	netif_tx_lock_bh(ndev);
 
@@ -1681,8 +1683,10 @@ static int geth_poll(struct napi_struct *napi, int budget)
 	struct netmap_adapter *na ;
 	na = NA(priv->ndev);
 
-	if (nm_native_on(na))
+	if (nm_native_on(na)){
+		//napi_complete(napi);
 		return 0;
+	}
 #endif
 
 	geth_tx_complete(priv);
@@ -2595,8 +2599,6 @@ static int netmap_geth_down(struct net_device *ndev)
 	sunxi_stop_tx(priv->base);
 
 
-	//netif_stop_queue(ndev);
-	//napi_disable(&priv->napi);
 
 	//netif_carrier_off(ndev);
 
