@@ -56,8 +56,8 @@
 
 #define PHY_POWER_ON 1
 
-#define DMA_DESC_RX	8
-#define DMA_DESC_TX	8
+#define DMA_DESC_RX	256
+#define DMA_DESC_TX	256
 #define BUDGET		(dma_desc_rx/4)
 #define TX_THRESH	(dma_desc_tx/4)
 
@@ -213,7 +213,7 @@ static void geth_rx_refill(struct net_device *ndev);
 
 #ifdef DEV_NETMAP
 void sunxi_netmap_attach(	struct net_device *ndev);
-
+#define DEBUG
 #endif
 
 
@@ -1223,7 +1223,7 @@ static irqreturn_t geth_interrupt(int irq, void *dev_id)
 #ifdef DEV_NETMAP
 #define NETMAP_DUMMY &dummy
 		int dummy;
-		D("rx-irq recv desc @ %08x, buf @ %08x",sunxi_get_cur_desc_addr(priv->base),
+		ND("rx-irq recv desc @ %08x, buf @ %08x",sunxi_get_cur_desc_addr(priv->base),
 			sunxi_get_cur_buf_addr(priv->base));
 		if (netmap_rx_irq(ndev, 0, NETMAP_DUMMY)){
 			return IRQ_HANDLED;
@@ -1496,6 +1496,19 @@ static netdev_tx_t geth_xmit(struct sk_buff *skb, struct net_device *ndev)
 	int i, csum_insert;
 	int nfrags = skb_shinfo(skb)->nr_frags;
 	dma_addr_t paddr;
+
+
+
+#ifdef DEV_NETMAP
+	struct netmap_adapter *na ;
+	na = NA(priv->ndev);
+
+	if (nm_native_on(na)){
+		D("shouldn't reach here");
+		return 0;
+	}
+#endif
+
 
 	spin_lock(&priv->tx_lock);
 	if (unlikely(circ_space(priv->tx_dirty, priv->tx_clean,
@@ -2505,6 +2518,155 @@ __setup("mac_addr=", set_mac_addr);
 #ifdef DEV_NETMAP
 
 
+static int netmap_tx_complete(struct geth_priv *priv)
+{
+	unsigned int entry = 0;
+	struct dma_desc *desc = NULL;
+	int space = 0;
+	int tx_stat;
+
+	spin_lock(&priv->tx_lock);
+	while (circ_cnt(priv->tx_dirty, priv->tx_clean, dma_desc_tx) > 0) {
+
+		entry = priv->tx_clean;
+		desc = priv->dma_tx + entry;
+
+		/* Check if the descriptor is owned by the DMA. */
+		if (desc_get_own(desc))
+			break;
+
+		/* Verify tx error by looking at the last segment */
+		if (desc_get_tx_ls(desc)) {
+			tx_stat = desc_get_tx_status(desc, (void *)(&priv->xstats));
+
+			if (likely(!tx_stat))
+				priv->ndev->stats.tx_packets++;
+			else
+				priv->ndev->stats.tx_errors++;
+		}
+
+		desc_init(desc);
+
+		/* Find next dirty desc */
+		priv->tx_clean = circ_inc(entry, dma_desc_tx);
+
+	}
+
+	space = circ_space(priv->tx_dirty, priv->tx_clean,dma_desc_tx);
+
+	spin_unlock(&priv->tx_lock);
+
+	return space;
+	
+}
+
+static netdev_tx_t netmap_dma_tx_load(kofdpaPktCb_t *pcb, uint64_t paddr, struct net_device *ndev)
+{
+#if 1
+	struct geth_priv  *priv = netdev_priv(ndev);
+	unsigned int entry;
+	struct dma_desc *desc, *first;
+	unsigned int len;
+	int i, csum_insert;
+	int nfrags = FEILD_MAX;
+	uint64_t frag_paddr ;
+
+	spin_lock(&priv->tx_lock);
+	if (unlikely(circ_space(priv->tx_dirty, priv->tx_clean,
+			dma_desc_tx) < (nfrags + 1))) {
+
+		spin_unlock(&priv->tx_lock);
+
+		return NETDEV_TX_BUSY;
+	}
+
+
+	csum_insert = 0;
+	entry = priv->tx_dirty;
+	first = desc = priv->dma_tx + entry;
+
+#if 1
+	for (i = FEILD_L2_HDR; i < nfrags; i++) {
+		
+		if(pcb->feilds[i].len == 0){
+			continue;
+		}
+		D("feild %d, len %d",i,pcb->feilds[i].len);
+		frag_paddr = (pcb->feilds[i].offset + paddr);
+		len = pcb->feilds[i].len + 4;
+
+		desc = priv->dma_tx + entry;
+
+		desc_buf_set(desc, frag_paddr, len);
+		/* Don't set the first's own bit, here */
+		if (first != desc) {
+			desc_set_own(desc);
+		}
+		entry = circ_inc(entry, dma_desc_tx);
+	}
+#else
+
+
+	frag_paddr =  (pcb->feilds[FEILD_DMAC].offset + paddr);
+	len = 12;
+
+	desc = priv->dma_tx + entry;
+
+	desc_buf_set(desc, frag_paddr, len);
+	/* Don't set the first's own bit, here */
+	if (first != desc) {
+		desc_set_own(desc);
+	}
+	entry = circ_inc(entry, dma_desc_tx);
+
+	frag_paddr = (pcb->feilds[FEILD_MPLS_1].offset + paddr);
+	len = 12;
+
+	desc = priv->dma_tx + entry;
+
+	desc_buf_set(desc, frag_paddr, len);
+	/* Don't set the first's own bit, here */
+	if (first != desc) {
+		desc_set_own(desc);
+	}
+	entry = circ_inc(entry, dma_desc_tx);
+
+	frag_paddr = (pcb->feilds[FEILD_DATA].offset + paddr);
+	len = pcb->feilds[FEILD_DATA].len;
+
+	desc = priv->dma_tx + entry;
+
+	desc_buf_set(desc, frag_paddr, len);
+	/* Don't set the first's own bit, here */
+	if (first != desc) {
+		desc_set_own(desc);
+	}
+	entry = circ_inc(entry, dma_desc_tx);
+
+#endif
+	ndev->stats.tx_bytes += pcb->pkt_len;
+	priv->tx_dirty = entry;
+	desc_tx_close(first, desc, csum_insert);
+
+	desc_set_own(first);
+	spin_unlock(&priv->tx_lock);
+
+
+#ifdef DEBUG
+	D("=======TX Descriptor DMA: 0x%08llx\n", priv->dma_tx_phy);
+	D("Tx pointor: dirty: %d, clean: %d\n", priv->tx_dirty, priv->tx_clean);
+	desc_print(priv->dma_tx, dma_desc_tx);
+#if 0			
+	D("======TX PKT DATA: ============\n");
+	/* dump the packet */
+	print_hex_dump(KERN_DEBUG, "slot->data: ", DUMP_PREFIX_NONE,
+			16, 1, ((void*)(unsigned char*)pcb + 16), 64, true);
+#endif
+#endif
+#endif
+	return NETDEV_TX_OK;
+}
+
 /*
  * Make the tx and rx rings point to the netmap buffers.
  */
@@ -2538,7 +2700,7 @@ int sunxi_netmap_init_buffers(struct net_device *dev)
 			si =  i;
 			PNMB(na, slot + si, &paddr);
 			// netmap_load_map(...)
-			D("desc %d ==> phy %p",i,(void*)(paddr + RESERVED_BLOCK_SIZE));
+			ND("desc %d ==> phy %p",i,(void*)(paddr + RESERVED_BLOCK_SIZE));
 			desc = &priv->dma_rx[i];
 			desc_buf_set(desc, (paddr + RESERVED_BLOCK_SIZE), priv->buf_sz);
 			desc_set_own(desc);
@@ -2615,9 +2777,86 @@ static int netmap_geth_down(struct net_device *ndev)
  */
 int
 sunxi_netmap_txsync(struct netmap_kring *kring, int flags)
-{
-	return 0;
-}
+	{
+		int rc;
+		struct netmap_adapter *na = kring->na;
+		struct ifnet *ifp = na->ifp;
+		struct netmap_ring *ring = kring->ring;
+		u_int ring_nr = kring->ring_id;
+		u_int nm_i; /* index into the netmap ring */
+		u_int nic_i;	/* index into the NIC ring */
+		u_int n;
+		u_int const lim = kring->nkr_num_slots - 1;
+		u_int const head = kring->rhead;
+	
+		/* device-specific */
+		struct geth_priv *priv = netdev_priv(ifp);
+	
+		rmb();
+		/*
+		 * First part: process new packets to send.
+		 */
+	
+		if (!netif_carrier_ok(ifp)) {
+			goto out;
+		}
+
+		D("tx sync enter");
+	
+		nm_i = kring->nr_hwcur;
+		if (nm_i != head) { /* we have new packets to send */
+			for (n = 0; nm_i != head; n++) {
+				struct netmap_slot *slot = &ring->slot[nm_i];
+				kofdpaPktCb_t *pcb;
+				u_int len = slot->len;
+				uint64_t paddr;
+				void *addr = PNMB(na, slot, &paddr);
+	
+				/* device-specific */
+	
+				NM_CHECK_ADDR_LEN(na, addr, len);
+
+				pcb = (kofdpaPktCb_t *)addr;
+	
+				if (slot->flags & NS_BUF_CHANGED) {
+					/* buffer has changed, reload map */
+				}
+				slot->flags &= ~(NS_REPORT | NS_BUF_CHANGED);
+				/* Fill the slot in the NIC ring. */
+				D("paddr = %p",paddr);
+				rc = netmap_dma_tx_load(pcb, paddr, ifp);
+				if(rc != NETDEV_TX_OK){
+					D("tx error");
+					break;
+				}
+
+				nm_i = nm_next(nm_i, lim);
+			}
+			kring->nr_hwcur = head;
+
+			/* start tx */
+			sunxi_tx_poll(priv->base);
+			wmb();	/* synchronize writes to the NIC ring */
+			//txr->next_to_use = nic_i; /* XXX what for ? */
+		}
+	
+		/*
+		 * Second part: reclaim buffers for completed transmissions.
+		 */
+		if (flags & NAF_FORCE_RECLAIM || nm_kr_txempty(kring)) {
+			int nic_slots;
+			int kring_slots;
+			nic_slots = netmap_tx_complete(priv) / FEILD_MAX;
+			kring_slots = circ_space(kring->nr_hwcur, kring->nr_hwtail, kring->nkr_num_slots);
+			
+			kring->nr_hwtail = (kring_slots > nic_slots) ? 
+				(kring->nr_hwtail + nic_slots) : nm_prev(kring->nr_hwcur,lim);
+		}
+out:
+	
+		return 0;
+	}
+
 
 
 
@@ -2628,7 +2867,6 @@ sunxi_netmap_txsync(struct netmap_kring *kring, int flags)
 int
 sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 {
-#if 1
 	struct netmap_adapter *na = kring->na;
 	struct ifnet *ifp = na->ifp;
 	struct netmap_ring *ring = kring->ring;
@@ -2644,7 +2882,7 @@ sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 	struct geth_priv *priv = netdev_priv(ifp);
 	struct dma_desc *rxr = priv->dma_rx;
 
-	D("rxsync: normal_irq_n = %ld",priv->xstats.normal_irq_n);
+	ND("rxsync: normal_irq_n = %ld",priv->xstats.normal_irq_n);
 
 
 	if (!netif_carrier_ok(ifp)) {
@@ -2734,9 +2972,6 @@ out:
 
 ring_reset:
 	return netmap_ring_reinit(kring);
-#else
-	return 0;
-#endif 	
 }
 
 

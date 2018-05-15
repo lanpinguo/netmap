@@ -287,6 +287,72 @@ struct geth_extra_stats {
 
 #ifdef DEV_NETMAP
 #define RESERVED_BLOCK_SIZE		256
+#define KDP_GET_FEILD_ADDR(pcb,feild)	((void*)(pcb) + pcb->feilds[feild].offset)
+
+enum{
+	FEILD_DMAC = 0,	/* destination mac address*/
+	FEILD_SMAC,			/* source mac address */
+	FEILD_VLAN_0,
+	FEILD_VLAN_1,
+	FEILD_L3_TYPE,	/* layer 3 protocol type */
+	FEILD_L2_HDR, 	/* layer 2 protocol header */
+
+	FEILD_MPLS_2, 	/* mpls2 header */
+	FEILD_MPLS_1,		/* mpls1 header */
+	FEILD_MPLS_0, 	/* mpls0 header */
+	FEILD_CW, 			/* mpls control word */
+	
+	FEILD_DATA, 		/* payload */
+	
+	FEILD_MAX
+
+};
+
+enum{
+	FEILD_DMAC_LEN 		= 6,	/* destination mac address*/
+	FEILD_SMAC_LEN 		= 6,			/* source mac address */
+	FEILD_VLAN_0_LEN	= 4,
+	FEILD_VLAN_1_LEN	= 4,
+	FEILD_L3_TYPE_LEN	= 2,	/* layer 3 protocol type */
+	FEILD_MPLS_2_LEN	= 4,		/* mpls2 header */
+	FEILD_MPLS_1_LEN	= 4,		/* mpls1 header */
+	FEILD_MPLS_0_LEN	= 4,		/* mpls0 header */
+	FEILD_CW_LEN			= 4, 			/* mpls control word */
+	FEILD_L3_HDR_LEN	= 20, 	/* layer 3 protocol header	*/
+	FEILD_L4_HDR_LEN	= 20, 	/* layer 4 protocol header */
+
+};
+
+
+typedef struct kofdpa_pkt_feild_s {
+	uint16_t									offset; /* the feild location offset from the base address */
+	uint16_t									len; 		/* the feild length */
+}kofdpa_pkt_feild_t;
+
+typedef struct kofdpa_MetaData_s
+{
+  uint32_t    mplsL2Port;               /**< For MPLS L2 VPN classification. */
+  uint32_t    tunnelId;                 /**< For MPLS L2 VPN classification. */
+  uint32_t    mplsType;               /**< MPLS Type value used in Set-field action */
+	void				*pGrpInst;
+}kofdpa_MetaData_t;
+
+typedef struct kofdpaPktCb_s
+{
+	uint64_t								port; 	/* every bit indicate a port, physical port number range is 0~63 */
+	void 										*this;	/* pointer to self*/
+	uint32_t								len;		/* total len */
+	uint16_t								pkt_len;/* pkt len */
+	uint16_t								cur;		/* point current position in the packet */
+	uint16_t								pool_tail;		/* the tail postion of the memory pool for packet increase */
+	uint16_t								pool_head;		/* the head postion of the memory pool for packet increase */
+	kofdpa_pkt_feild_t 			feilds[FEILD_MAX];		/* packet feild info */
+	kofdpa_MetaData_t				meta_data;
+	void* 									action_set[2];
+}kofdpaPktCb_t;
+
+
+
 
 #endif /*DEV_NETMAP*/
 int sunxi_mdio_read(void *,  int, int);
