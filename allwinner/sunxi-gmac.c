@@ -136,7 +136,13 @@ struct geth_priv {
 	unsigned int tx_clean;
 	unsigned int tx_dirty;
 	dma_addr_t dma_tx_phy;
-
+#ifdef DEV_NETMAP	
+	unsigned int tdt;
+	unsigned int tdh;
+	unsigned int tx_token_bucket;
+	unsigned int tx_token_threshold;
+	unsigned int num_tx_slot;
+#endif
 	unsigned long buf_sz;
 
 	struct dma_desc *dma_rx;
@@ -1243,7 +1249,6 @@ static irqreturn_t geth_interrupt(int irq, void *dev_id)
 static int geth_up(struct net_device *ndev)
 {
 	struct geth_priv *priv = netdev_priv(ndev);
-	int ret = 0;
 
 
 	priv->rx_clean = priv->rx_dirty = 0;
@@ -1268,11 +1273,6 @@ static int geth_up(struct net_device *ndev)
 	/*sunxi_mac_loopback(priv->base, 1);*/
 
 	return 0;
-
-desc_err:
-err:
-
-	return ret;
 }
 
 static int geth_down(struct net_device *ndev)
@@ -2522,7 +2522,7 @@ static int netmap_tx_complete(struct geth_priv *priv)
 {
 	unsigned int entry = 0;
 	struct dma_desc *desc = NULL;
-	int space = 0;
+	int head = 0;
 	int tx_stat;
 
 	spin_lock(&priv->tx_lock);
@@ -2549,35 +2549,45 @@ static int netmap_tx_complete(struct geth_priv *priv)
 
 		/* Find next dirty desc */
 		priv->tx_clean = circ_inc(entry, dma_desc_tx);
+		priv->tx_token_bucket++;
+		if(priv->tx_token_bucket >= priv->tx_token_threshold){
+			/* The bucket is full, there is enough desc to send a netmap slot, so forward the ring tail */
+			priv->tdh = circ_inc(priv->tdh, priv->num_tx_slot);
+
+			/* Clear the bucket */
+			priv->tx_token_bucket = 0;
+		}
+		
 
 	}
 
-	space = circ_space(priv->tx_dirty, priv->tx_clean,dma_desc_tx);
+	head = priv->tdh;
 
 	spin_unlock(&priv->tx_lock);
 
-	return space;
+	return head;
 	
 }
 
 static netdev_tx_t netmap_dma_tx_load(kofdpaPktCb_t *pcb, uint64_t paddr, struct net_device *ndev)
 {
-#if 1
+	int tail ;
 	struct geth_priv  *priv = netdev_priv(ndev);
 	unsigned int entry;
 	struct dma_desc *desc, *first;
 	unsigned int len;
 	int i, csum_insert;
-	int nfrags = FEILD_MAX;
+	int nfrags = PKT_FRAGS_NUM_MAX;
 	uint64_t frag_paddr ;
 
 	spin_lock(&priv->tx_lock);
+	tail = priv->tdt;
 	if (unlikely(circ_space(priv->tx_dirty, priv->tx_clean,
 			dma_desc_tx) < (nfrags + 1))) {
 
 		spin_unlock(&priv->tx_lock);
 
-		return NETDEV_TX_BUSY;
+		return tail;
 	}
 
 
@@ -2585,15 +2595,15 @@ static netdev_tx_t netmap_dma_tx_load(kofdpaPktCb_t *pcb, uint64_t paddr, struct
 	entry = priv->tx_dirty;
 	first = desc = priv->dma_tx + entry;
 
-#if 1
-	for (i = FEILD_L2_HDR; i < nfrags; i++) {
-		
-		if(pcb->feilds[i].len == 0){
+	for (i = 0; i < nfrags; i++) {
+		int feild = pcb->frags[i];
+		if(pcb->frags[i] == 0 || pcb->feilds[feild].len == 0){
 			continue;
 		}
-		D("feild %d, len %d",i,pcb->feilds[i].len);
-		frag_paddr = (pcb->feilds[i].offset + paddr);
-		len = pcb->feilds[i].len + 4;
+		
+		D("feild %d, len %d",feild,pcb->feilds[feild].len);
+		frag_paddr = (pcb->feilds[feild].offset + paddr);
+		len = pcb->feilds[feild].len;
 
 		desc = priv->dma_tx + entry;
 
@@ -2604,51 +2614,17 @@ static netdev_tx_t netmap_dma_tx_load(kofdpaPktCb_t *pcb, uint64_t paddr, struct
 		}
 		entry = circ_inc(entry, dma_desc_tx);
 	}
-#else
 
-
-	frag_paddr =  (pcb->feilds[FEILD_DMAC].offset + paddr);
-	len = 12;
-
-	desc = priv->dma_tx + entry;
-
-	desc_buf_set(desc, frag_paddr, len);
-	/* Don't set the first's own bit, here */
-	if (first != desc) {
-		desc_set_own(desc);
-	}
-	entry = circ_inc(entry, dma_desc_tx);
-
-	frag_paddr = (pcb->feilds[FEILD_MPLS_1].offset + paddr);
-	len = 12;
-
-	desc = priv->dma_tx + entry;
-
-	desc_buf_set(desc, frag_paddr, len);
-	/* Don't set the first's own bit, here */
-	if (first != desc) {
-		desc_set_own(desc);
-	}
-	entry = circ_inc(entry, dma_desc_tx);
-
-	frag_paddr = (pcb->feilds[FEILD_DATA].offset + paddr);
-	len = pcb->feilds[FEILD_DATA].len;
-
-	desc = priv->dma_tx + entry;
-
-	desc_buf_set(desc, frag_paddr, len);
-	/* Don't set the first's own bit, here */
-	if (first != desc) {
-		desc_set_own(desc);
-	}
-	entry = circ_inc(entry, dma_desc_tx);
-
-#endif
 	ndev->stats.tx_bytes += pcb->pkt_len;
 	priv->tx_dirty = entry;
 	desc_tx_close(first, desc, csum_insert);
 
 	desc_set_own(first);
+
+	
+	priv->tdt = circ_inc(priv->tdt, priv->num_tx_slot);
+	tail = priv->tdt;
+	
 	spin_unlock(&priv->tx_lock);
 
 
@@ -2656,15 +2632,8 @@ static netdev_tx_t netmap_dma_tx_load(kofdpaPktCb_t *pcb, uint64_t paddr, struct
 	D("=======TX Descriptor DMA: 0x%08llx\n", priv->dma_tx_phy);
 	D("Tx pointor: dirty: %d, clean: %d\n", priv->tx_dirty, priv->tx_clean);
 	desc_print(priv->dma_tx, dma_desc_tx);
-#if 0			
-	D("======TX PKT DATA: ============\n");
-	/* dump the packet */
-	print_hex_dump(KERN_DEBUG, "slot->data: ", DUMP_PREFIX_NONE,
-			16, 1, ((void*)(unsigned char*)pcb + 16), 64, true);
-#endif
-#endif
-#endif
-	return NETDEV_TX_OK;
+#endif /* DEBUG */
+	return tail;
 }
 
 /*
@@ -2710,6 +2679,24 @@ int sunxi_netmap_init_buffers(struct net_device *dev)
 		D("i now is %d", i);
 		wmb(); /* Force memory writes to complete */
 	}
+
+	/* now initialize the tx ring(s) */
+	for (r = 0; r < na->num_tx_rings; r++) {
+		slot = netmap_reset(na, NR_TX, r, 0);
+		if (!slot) {
+			D("Skipping TX ring %d, netmap mode not requested", r);
+			continue;
+		}
+
+		priv->num_tx_slot = na->num_tx_desc;
+		priv->tdh 				= 0;
+		priv->tdt 				= 0; 
+		priv->tx_token_bucket = 0;
+		priv->tx_token_threshold = PKT_FRAGS_NUM_MAX;
+	}
+
+
+	
 	return 1;
 }
 
@@ -2717,9 +2704,7 @@ int sunxi_netmap_init_buffers(struct net_device *dev)
 static int netmap_geth_up(struct net_device *ndev)
 {
 	struct geth_priv *priv = netdev_priv(ndev);
-	int ret = 0;
 
-	D("netmap_geth_up 1");
 
 	priv->rx_clean = priv->rx_dirty = 0;
 	priv->tx_clean = priv->tx_dirty = 0;
@@ -2746,11 +2731,6 @@ static int netmap_geth_up(struct net_device *ndev)
 
 	return 0;
 
-desc_err:
-	D("netmap_geth_up, ret=%d",ret);
-err:
-	D("err, ret=%d",ret);
-	return ret;
 }
 
 static int netmap_geth_down(struct net_device *ndev)
@@ -2777,12 +2757,11 @@ static int netmap_geth_down(struct net_device *ndev)
  */
 int
 sunxi_netmap_txsync(struct netmap_kring *kring, int flags)
-	{
-		int rc;
+{
 		struct netmap_adapter *na = kring->na;
 		struct ifnet *ifp = na->ifp;
 		struct netmap_ring *ring = kring->ring;
-		u_int ring_nr = kring->ring_id;
+		//u_int ring_nr = kring->ring_id;
 		u_int nm_i; /* index into the netmap ring */
 		u_int nic_i;	/* index into the NIC ring */
 		u_int n;
@@ -2805,6 +2784,8 @@ sunxi_netmap_txsync(struct netmap_kring *kring, int flags)
 	
 		nm_i = kring->nr_hwcur;
 		if (nm_i != head) { /* we have new packets to send */
+			
+		nic_i = netmap_idx_k2n(kring, nm_i);
 			for (n = 0; nm_i != head; n++) {
 				struct netmap_slot *slot = &ring->slot[nm_i];
 				kofdpaPktCb_t *pcb;
@@ -2823,17 +2804,11 @@ sunxi_netmap_txsync(struct netmap_kring *kring, int flags)
 				}
 				slot->flags &= ~(NS_REPORT | NS_BUF_CHANGED);
 				/* Fill the slot in the NIC ring. */
-				D("paddr = %p",paddr);
-				rc = netmap_dma_tx_load(pcb, paddr, ifp);
-				if(rc != NETDEV_TX_OK){
-					D("tx error");
-					break;
-				}
-
+				nic_i = netmap_dma_tx_load(pcb, paddr, ifp);
+				
 				nm_i = nm_next(nm_i, lim);
 			}
 			kring->nr_hwcur = head;
-
 			/* start tx */
 			sunxi_tx_poll(priv->base);
 			wmb();	/* synchronize writes to the NIC ring */
@@ -2844,18 +2819,13 @@ sunxi_netmap_txsync(struct netmap_kring *kring, int flags)
 		 * Second part: reclaim buffers for completed transmissions.
 		 */
 		if (flags & NAF_FORCE_RECLAIM || nm_kr_txempty(kring)) {
-			int nic_slots;
-			int kring_slots;
-			nic_slots = netmap_tx_complete(priv) / FEILD_MAX;
-			kring_slots = circ_space(kring->nr_hwcur, kring->nr_hwtail, kring->nkr_num_slots);
-			
-			kring->nr_hwtail = (kring_slots > nic_slots) ? 
-				(kring->nr_hwtail + nic_slots) : nm_prev(kring->nr_hwcur,lim);
+			nic_i = netmap_tx_complete(priv);
+			kring->nr_hwtail = nm_prev(netmap_idx_n2k(kring, nic_i), lim);
 		}
 out:
 	
 		return 0;
-	}
+}
 
 
 
@@ -2870,7 +2840,7 @@ sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 	struct netmap_adapter *na = kring->na;
 	struct ifnet *ifp = na->ifp;
 	struct netmap_ring *ring = kring->ring;
-	u_int ring_nr = kring->ring_id;
+	//u_int ring_nr = kring->ring_id;
 	u_int nm_i;	/* index into the netmap ring */
 	u_int nic_i;	/* index into the NIC ring */
 	u_int n;
@@ -3030,7 +3000,7 @@ sunxi_netmap_attach(	struct net_device *ndev)
 	
 	na.ifp = ndev;
 	na.pdev = priv->dev;
-	na.num_tx_desc = dma_desc_tx;
+	na.num_tx_desc = dma_desc_tx / PKT_FRAGS_NUM_MAX;
 	na.num_rx_desc = dma_desc_rx;
 	na.nm_register = sunxi_netmap_reg;
 	na.nm_txsync = sunxi_netmap_txsync;

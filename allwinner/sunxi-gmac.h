@@ -287,20 +287,22 @@ struct geth_extra_stats {
 
 #ifdef DEV_NETMAP
 #define RESERVED_BLOCK_SIZE		256
+#define PKT_FRAGS_NUM_MAX			8
 #define KDP_GET_FEILD_ADDR(pcb,feild)	((void*)(pcb) + pcb->feilds[feild].offset)
 
 enum{
-	FEILD_DMAC = 0,	/* destination mac address*/
-	FEILD_SMAC,			/* source mac address */
-	FEILD_VLAN_0,
-	FEILD_VLAN_1,
-	FEILD_L3_TYPE,	/* layer 3 protocol type */
+	FEILD_L2_DMAC = 0,	/* destination mac address*/
+	FEILD_L2_SMAC,			/* source mac address */
+	FEILD_L2_VLAN_0,
+	FEILD_L2_VLAN_1,
+	FEILD_L2_TYPE,	/* layer 3 protocol type */
 	FEILD_L2_HDR, 	/* layer 2 protocol header */
 
 	FEILD_MPLS_2, 	/* mpls2 header */
 	FEILD_MPLS_1,		/* mpls1 header */
 	FEILD_MPLS_0, 	/* mpls0 header */
-	FEILD_CW, 			/* mpls control word */
+	FEILD_MPLS_CW, 	/* mpls control word */
+	FEILD_MPLS, 		/* MPLS protocol header */
 	
 	FEILD_DATA, 		/* payload */
 	
@@ -309,15 +311,15 @@ enum{
 };
 
 enum{
-	FEILD_DMAC_LEN 		= 6,	/* destination mac address*/
-	FEILD_SMAC_LEN 		= 6,			/* source mac address */
-	FEILD_VLAN_0_LEN	= 4,
-	FEILD_VLAN_1_LEN	= 4,
-	FEILD_L3_TYPE_LEN	= 2,	/* layer 3 protocol type */
+	FEILD_L2_DMAC_LEN 		= 6,	/* destination mac address*/
+	FEILD_L2_SMAC_LEN 		= 6,			/* source mac address */
+	FEILD_L2_VLAN_0_LEN	= 4,
+	FEILD_L2_VLAN_1_LEN	= 4,
+	FEILD_L2_TYPE_LEN	= 2,	/* layer 3 protocol type */
 	FEILD_MPLS_2_LEN	= 4,		/* mpls2 header */
 	FEILD_MPLS_1_LEN	= 4,		/* mpls1 header */
 	FEILD_MPLS_0_LEN	= 4,		/* mpls0 header */
-	FEILD_CW_LEN			= 4, 			/* mpls control word */
+	FEILD_MPLS_CW_LEN			= 4, 			/* mpls control word */
 	FEILD_L3_HDR_LEN	= 20, 	/* layer 3 protocol header	*/
 	FEILD_L4_HDR_LEN	= 20, 	/* layer 4 protocol header */
 
@@ -346,6 +348,7 @@ typedef struct kofdpaPktCb_s
 	uint16_t								cur;		/* point current position in the packet */
 	uint16_t								pool_tail;		/* the tail postion of the memory pool for packet increase */
 	uint16_t								pool_head;		/* the head postion of the memory pool for packet increase */
+	uint8_t								 	frags[PKT_FRAGS_NUM_MAX];		/* frags that will used by nic */
 	kofdpa_pkt_feild_t 			feilds[FEILD_MAX];		/* packet feild info */
 	kofdpa_MetaData_t				meta_data;
 	void* 									action_set[2];
