@@ -38,6 +38,7 @@
 #include "sunxi-gmac.h"
 
 #define PKT_DEBUG
+#define CONFIG_GETH_ATTRS
 
 
 #ifdef DEV_NETMAP
@@ -56,8 +57,8 @@
 
 #define PHY_POWER_ON 1
 
-#define DMA_DESC_RX	256
-#define DMA_DESC_TX	256
+#define DMA_DESC_RX	32
+#define DMA_DESC_TX	32
 #define BUDGET		(dma_desc_rx/4)
 #define TX_THRESH	(dma_desc_tx/4)
 
@@ -377,9 +378,94 @@ static ssize_t adjust_bgs_write(struct device *dev, struct device_attribute *att
 	return count;
 }
 
+static ssize_t desc_tx_show(struct device *dev, struct device_attribute * attr,char * buf)
+{
+			int i;
+			struct net_device *ndev = to_net_dev(dev);
+			struct geth_priv *priv = netdev_priv(ndev);
+			struct dma_desc *desc = priv->dma_tx; 
+			static int offset = 0;
+			int size;
+			
+			for (i = offset, size = 0 ; (i < offset + 30) && (i < dma_desc_tx); i++) {
+				u32 *x = (u32 *)(desc + i);
+				size += sprintf(&buf[size],"\t%-4d [0x%08lx]: %08x %08x %08x %08x\n",
+							 i, (unsigned long)(&desc[i]),
+							 x[0], x[1], x[2], x[3]);
+			}
+			offset = i % dma_desc_tx;
+			return size;
+	return 0;
+}
+
+static ssize_t desc_tx_write(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+
+	return 0;
+}
+
+static ssize_t desc_rx_show(struct device *dev, struct device_attribute * attr,char * buf)
+{
+	int i;
+	struct net_device *ndev = to_net_dev(dev);
+	struct geth_priv *priv = netdev_priv(ndev);
+	struct dma_desc *desc = priv->dma_rx;	
+	static int offset = 0;
+	int size;
+	
+	for (i = offset, size = 0 ; (i < offset + 30) && (i < dma_desc_rx); i++) {
+		u32 *x = (u32 *)(desc + i);
+		size += sprintf(&buf[size],"\t%-4d [0x%08lx]: %08x %08x %08x %08x\n",
+					 i, (unsigned long)(&desc[i]),
+					 x[0], x[1], x[2], x[3]);
+	}
+	offset = i % dma_desc_rx;
+	return size;
+}
+
+static ssize_t desc_rx_write(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+
+	return 0;
+}
+
+
+static ssize_t geth_status_show(struct device *dev, struct device_attribute * attr,char * buf)
+{
+	struct net_device *ndev = to_net_dev(dev);
+	struct geth_priv *priv = netdev_priv(ndev);
+	int size = 0;
+	
+	size += sprintf(&buf[size],"%-20s: %ld \n","normal_irq_n ",priv->xstats.normal_irq_n);
+	
+	size += sprintf(&buf[size],"%-20s: 0x%08llx\n","RX Descriptor DMA", priv->dma_rx_phy);
+	size += sprintf(&buf[size],"%-20s: dirty: %d, clean: %d\n","RX pointor", priv->rx_dirty, priv->rx_clean);
+	size += sprintf(&buf[size],"%-20s: %ld \n","RX packets ",priv->ndev->stats.rx_packets);
+	size += sprintf(&buf[size],"%-20s: %ld \n","RX bytes ",priv->ndev->stats.rx_bytes);
+	
+	size += sprintf(&buf[size],"%-20s: 0x%08llx\n","TX Descriptor DMA", priv->dma_tx_phy);
+	size += sprintf(&buf[size],"%-20s: dirty: %d, clean: %d\n","TX pointor", priv->tx_dirty, priv->tx_clean);
+	size += sprintf(&buf[size],"%-20s: %ld \n","TX packets ",priv->ndev->stats.tx_packets);
+	size += sprintf(&buf[size],"%-20s: %ld \n","TX bytes ",priv->ndev->stats.tx_bytes);
+	return size;
+}
+
+static ssize_t geth_status_write(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+
+	return 0;
+}
+
+
 
 static struct device_attribute adjust_reg[] = {
 	__ATTR(adjust_bgs, 0777, adjust_bgs_show, adjust_bgs_write),
+	__ATTR(desc_tx, 0777, desc_tx_show, desc_tx_write),
+	__ATTR(desc_rx, 0777, desc_rx_show, desc_rx_write),
+	__ATTR(status, 0777, geth_status_show, geth_status_write),
 };
 
 static int geth_create_attrs(struct net_device *ndev)
@@ -2818,10 +2904,16 @@ sunxi_netmap_txsync(struct netmap_kring *kring, int flags)
 		/*
 		 * Second part: reclaim buffers for completed transmissions.
 		 */
+#if 1
+		nic_i = netmap_tx_complete(priv);
+		kring->nr_hwtail = nm_prev(netmap_idx_n2k(kring, nic_i), lim);
+
+#else
 		if (flags & NAF_FORCE_RECLAIM || nm_kr_txempty(kring)) {
 			nic_i = netmap_tx_complete(priv);
 			kring->nr_hwtail = nm_prev(netmap_idx_n2k(kring, nic_i), lim);
 		}
+#endif		
 out:
 	
 		return 0;
@@ -2871,7 +2963,7 @@ sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 	 */
 	if (netmap_no_pendintr || force_update) {
 		uint16_t slot_flags = kring->nkr_slot_flags;
-		uint64_t paddr;
+		//uint64_t paddr;
 
 		nic_i =  priv->rx_dirty;;
 		nm_i = nic_i;
@@ -2885,17 +2977,19 @@ sunxi_netmap_rxsync(struct netmap_kring *kring, int flags)
 			}	
 
 			ring->slot[nm_i].len = desc_rx_frame_len(curr);
+#if 0			
 			PNMB(na, &ring->slot[nm_i], &paddr);
 			ND("RX PKT: desc @ %p, buf @ %p,LEN = %d",((struct dma_desc *)	priv->dma_rx_phy + nic_i),
 				(void*)(paddr + RESERVED_BLOCK_SIZE),ring->slot[nm_i].len);
 			ND("desc->desc2 = %08x",curr->desc2);
-#if 0			
 			printk("======RX PKT DATA: ============\n");
 			/* dump the packet */
 			print_hex_dump(KERN_DEBUG, "slot->data: ", DUMP_PREFIX_NONE,
 					16, 1, (NMB(na,&ring->slot[nm_i]) + RESERVED_BLOCK_SIZE), 64, true);
 #endif
 			ring->slot[nm_i].flags = slot_flags;
+			priv->ndev->stats.rx_packets++;
+			priv->ndev->stats.rx_bytes += ring->slot[nm_i].len;
 			nm_i = nm_next(nm_i, lim);
 			nic_i = circ_inc(nic_i, dma_desc_rx);
 		}
